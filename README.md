@@ -14,7 +14,7 @@ README.md             # 统一使用入口
 
 | 能力 | App 端 | 浏览器端 | 安装与版本 |
 | --- | --- | --- | --- |
-| 图文与视频发布 | [内嵌页面](app) | [Chrome 扩展](browser) | [1.0.0 版本](versions/1.0.0.md) |
+| 抖音图文与视频发布 | [内嵌页面](app) | [Chrome 扩展](browser) | [1.0.0 版本](versions/1.0.0.md) |
 | Codex AI 中转 | [独立服务说明](app/codex-service) | 无 | [版本索引](app/codex-service/versions) |
 
 App 主程序见 [lumaindex-library](https://github.com/dteer/lumaindex-library)。Codex 目录目前只有安装说明，没有服务源码；其安装包不会被打进图文发布插件。
