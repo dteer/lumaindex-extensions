@@ -1,6 +1,7 @@
 'use strict';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
 import {defaultPrompt,generateCopy} from './ai-copy.js';
+import {createPreviewWheel} from './preview-wheel.js';
 const context=window.pluginContext,$=id=>document.getElementById(id);
 let selected=[],loading=false,loadError=null,mode='image',focusedID=null,draggedID=null,previewKey='',previewAssetID=null,previewIndex=0,previewAnimation=null;
 const current=()=>selected.filter(a=>a.kind===mode);
@@ -166,10 +167,9 @@ function preparePreview(asset){
 let previewTrack=null,trackSignature='',trackAnimation=null,trackPosition=0,wheelTimer=null,wheelStart=0;
 function moveTrack(position,animated=true){
  if(!previewTrack)return;
- const width=$('preview-media').clientWidth||1;
  const from=getComputedStyle(previewTrack).transform;
  trackAnimation?.cancel();trackAnimation=null;trackPosition=position;
- const to=`translate3d(${-position*width}px,0,0)`;previewTrack.style.transform=to;
+ const to=`translate3d(${-position*100}%,0,0)`;previewTrack.style.transform=to;
  if(animated&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
   trackAnimation=previewTrack.animate([{transform:from==='none'?'translate3d(0,0,0)':from},{transform:to}],{duration:360,easing:'cubic-bezier(.2,.75,.25,1)'});
   trackAnimation.onfinish=()=>{trackAnimation=null;};
@@ -340,27 +340,20 @@ previewStage.addEventListener('pointerenter',()=>{
   previewStage.focus({preventScroll:true});
  }
 });
+// 滚轮只选择完整的一页，避免惯性把轨道拖入未加载的远端页。
+const previewWheel=createPreviewWheel();
 document.addEventListener('wheel',event=>{
  const bounds=previewStage.getBoundingClientRect();
  if(event.clientX<bounds.left||event.clientX>=bounds.right||event.clientY<bounds.top||event.clientY>=bounds.bottom)return;
- if(mode!=='image'||current().length<2||event.ctrlKey||loading||operationBusy||$('decision').open)return;
+ if(mode!=='image'||current().length<2||event.ctrlKey||loading||operationBusy||$('decision').open||$('lightbox').open||$('ai-dialog').open)return;
  event.preventDefault();
  const delta=Math.abs(event.deltaX)>Math.abs(event.deltaY)?event.deltaX:event.deltaY;
  const pixels=delta*(event.deltaMode===1?16:event.deltaMode===2?previewStage.clientHeight:1);
- if(!previewTrack||$('lightbox').open)return;
- if(!wheelTimer){
-  wheelStart=current().indexOf(focused());
-  const matrix=new DOMMatrixReadOnly(getComputedStyle(previewTrack).transform);trackPosition=-matrix.m41/(bounds.width||1);
- }
- clearTimeout(wheelTimer);
- moveTrack(Math.max(0,Math.min(current().length-1,trackPosition+pixels/(bounds.width||1))),false);
- wheelTimer=setTimeout(()=>{
-  wheelTimer=null;
-  const delta=trackPosition-wheelStart;
-  const target=Math.max(0,Math.min(current().length-1,Math.abs(delta)>.12?wheelStart+Math.sign(delta):wheelStart));
-  stepPreview(target-current().indexOf(focused()));moveTrack(target,true);
- },110);
+ const direction=previewWheel(pixels,performance.now());
+ if(direction)stepPreview(direction);
 },{passive:false,capture:true});
+// 宽度变化时结束旧像素矩阵动画，并按当前页重新定位。
+new ResizeObserver(()=>{if(previewTrack)moveTrack(current().indexOf(focused()),false);}).observe($('preview-media'));
 previewStage.addEventListener('keydown',event=>{
  if(mode==='image'&&(event.key==='ArrowLeft'||event.key==='ArrowRight')){
   event.preventDefault();stepPreview(event.key==='ArrowRight'?1:-1);
