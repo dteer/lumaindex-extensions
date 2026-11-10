@@ -186,7 +186,9 @@ async function readAssets(ids,assumedMode='image'){
    }
    const resolvedID=a.id||id,name=a.name||id,kind=a.mediaType==='video'?'video':'image';
    const valid=kind==='video'?/\.(mp4|mov|webm)$/i.test(name):/\.(jpe?g|png|webp|bmp|tiff?|heic|heif|avif|cr2|cr3|nef|nrw|arw|srf|sr2|dng|raf|orf|rw2|pef|srw|raw)$/i.test(name);
-   if(!result.some(item=>item.id===resolvedID))result.push({id:resolvedID,name,kind,error:!valid?'暂不支持此素材格式':kind==='video'&&a.sizeBytes>80*1024*1024?'视频超过传输限制':null});
+   // 所有带入与草稿恢复共用此入口，不支持的格式直接跳过，不占素材数量。
+   if(!valid)continue;
+   if(!result.some(item=>item.id===resolvedID))result.push({id:resolvedID,name,kind,error:kind==='video'&&a.sizeBytes>80*1024*1024?'视频超过传输限制':null});
   }catch(error){result.push({id,name:id,kind:assumedMode,error:error.message});}
  }return result;
 }
@@ -206,7 +208,7 @@ async function load(){
    const conflict=kinds.some(k=>store.data.modes[k]);let choice='replace';
    if(conflict){render();choice=await decide('已有暂存草稿','继续旧草稿会保留原文案和素材顺序，追加本次带入的素材，并按素材 ID 去重。覆盖会替换对应模式的素材和文案；另一种模式的草稿保留。',[['cancel','取消'],['keep','继续旧草稿'],['replace','覆盖旧草稿','primary']]);}
    if(choice==='cancel'){await closeHost();return;}
-   if(choice==='replace'){
+   if(choice==='replace'&&kinds.length){
     for(const k of kinds){selected=selected.filter(a=>a.kind!==k).concat(assets.filter(a=>a.kind===k));texts[k]={title:'',description:''};settings[k]=defaultSettings();delete store.data.modes[k];store.update(k,contentFor(k));}
     mode=kinds.includes('image')?'image':'video';store.data.activeMode=mode;showText();
    }
