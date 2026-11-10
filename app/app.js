@@ -1,5 +1,6 @@
 'use strict';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
+import {defaultPrompt,generateCopy} from './ai-copy.js';
 const context=window.pluginContext,$=id=>document.getElementById(id);
 let selected=[],loading=false,loadError=null,mode='image',focusedID=null,draggedID=null,previewKey='',previewAssetID=null,previewIndex=0,previewAnimation=null;
 const current=()=>selected.filter(a=>a.kind===mode);
@@ -13,6 +14,77 @@ const store=new DraftStore(initial,async value=>{
  if(context?.nativeUIAvailable){await window.webkit.messageHandlers.pluginUI.postMessage({op:'persist',value});}
  else localStorage.setItem(fallbackKey,JSON.stringify(value));
 });
+let aiController=null,aiResult=null;
+let aiImageIDs=new Set();
+// AI 弹窗不占编辑区空间；关闭时取消未完成生成，保留已填写内容。
+$('open-ai').onclick=()=>{if(!loading&&!operationBusy){renderAIImages();$('ai-dialog').showModal();}};
+$('close-ai').onclick=()=>$('ai-dialog').close();
+$('ai-dialog').addEventListener('close',()=>aiController?.abort());
+$('ai-prompt').value=store.data.aiPrompt??defaultPrompt;
+$('ai-context').value=store.data.aiContext||'';
+// 每次启用时默认首图；勾选仅存内存，重开插件默认不发送图片。
+$('ai-use-images').onchange=()=>{
+ aiImageIDs=new Set($('ai-use-images').checked?current().filter(a=>a.kind==='image'&&!a.error).slice(0,1).map(a=>a.id):[]);
+ renderAIImages();
+};
+// 图片勾选位于缩略图右下角，与图库素材选择控件保持一致。
+function renderAIImages(){
+ const available=mode==='image'?current().filter(a=>!a.error):[];
+ aiImageIDs=new Set([...aiImageIDs].filter(id=>available.some(a=>a.id===id)));
+ const enabled=$('ai-use-images').checked;
+ $('ai-use-images').disabled=mode!=='image';
+ if(mode!=='image'){$('ai-use-images').checked=false;aiImageIDs.clear();}
+ const active=enabled&&mode==='image';
+ $('ai-image-grid').hidden=!active;$('ai-image-grid').replaceChildren();
+ $('ai-image-note').textContent=mode!=='image'?'图片分析适用于图文作品，视频当前仅使用文字信息。':active?`将分析 ${aiImageIDs.size} 张缩略图（最多 6 张），发送至当前 AI 服务，用量和耗时会增加。`:'默认关闭，仅根据文字生成。';
+ for(const asset of active?available:[]){
+  const card=document.createElement('div');card.className='ai-image-card';
+  const thumb=document.createElement('div');thumb.className='ai-image-thumb';
+  const img=document.createElement('img');img.src=`${context.apiBaseURL}/assets/${encodeURIComponent(asset.id)}/thumbnail`;img.alt=asset.name;img.loading='lazy';thumb.append(img);
+  const button=document.createElement('button');const checked=aiImageIDs.has(asset.id);
+  button.className='ai-image-select';button.setAttribute('aria-label',(checked?'取消选择 ':'选择素材 ')+asset.name);button.setAttribute('aria-pressed',String(checked));button.textContent=checked?'✓':'';
+  button.disabled=!checked&&aiImageIDs.size>=6;
+  button.onclick=()=>{if(checked)aiImageIDs.delete(asset.id);else aiImageIDs.add(asset.id);renderAIImages();};thumb.append(button);
+  const name=document.createElement('div');name.className='file-name';name.textContent=asset.name;card.append(thumb,name);$('ai-image-grid').append(card);
+ }
+}
+// 提示词与作品信息独立于发布草稿保存，删除草稿不会重置创作偏好。
+async function saveAIPreferences(){
+ store.data.aiPrompt=$('ai-prompt').value;store.data.aiContext=$('ai-context').value;
+ $('prompt-status').textContent='正在保存…';
+ try{await store.commit();$('prompt-status').textContent='已保存至本机';}
+ catch{$('prompt-status').textContent='保存失败，请重新编辑或暂存重试';storageFailure=true;draftStatus();}
+}
+$('ai-prompt').oninput=saveAIPreferences;$('ai-context').oninput=saveAIPreferences;
+$('reset-prompt').onclick=()=>{$('ai-prompt').value=defaultPrompt;saveAIPreferences();};
+$('cancel-copy').onclick=()=>aiController?.abort();
+// 模式与输入在提交时快照，结果只在用户应用时修改文案。
+$('generate-copy').onclick=async()=>{
+ if(aiController||loading||operationBusy)return;
+ if($('ai-use-images').checked&&!aiImageIDs.size){$('ai-status').textContent='请至少勾选一张图片，或关闭图片分析';return;}
+ if(!$('ai-prompt').value.trim()||!$('ai-context').value.trim()){$('ai-status').textContent='请填写提示词和作品信息';return;}
+ const controller=new AbortController();aiController=controller;aiResult=null;
+ const requestedMode=mode;
+ $('ai-result').hidden=true;$('generate-copy').disabled=true;$('cancel-copy').hidden=false;$('ai-status').textContent='正在生成…';
+ const timeout=setTimeout(()=>controller.abort(),185000);
+ try{
+  const result=await generateCopy(context.apiBaseURL,$('ai-prompt').value,JSON.stringify({type:requestedMode==='video'?'视频':'图文',work:$('ai-context').value,title:$('title').value,description:$('description').value}),controller.signal,$('ai-use-images').checked?current().filter(a=>aiImageIDs.has(a.id)).map(a=>a.id):[]);
+  aiResult={...result,mode:requestedMode};$('ai-title').textContent=result.title;$('ai-description').textContent=result.description;$('ai-result').hidden=false;$('ai-status').textContent='生成完成，检查后可应用到'+(requestedMode==='video'?'视频':'图文')+'文案';
+ }catch(error){$('ai-status').textContent=controller.signal.aborted?'生成已取消或超时，可重新生成':error.message;}
+ finally{clearTimeout(timeout);aiController=null;$('generate-copy').disabled=false;$('cancel-copy').hidden=true;}
+};
+$('apply-copy').onclick=async()=>{
+ if(!aiResult||loading||operationBusy)return;
+ const result=aiResult;
+ captureText();
+ if(texts[result.mode].title||texts[result.mode].description){
+  const choice=await decide('替换现有文案？','将用本次 AI 结果替换'+(result.mode==='video'?'视频':'图文')+'的标题和描述。',[['cancel','取消'],['apply','替换','primary']]);if(choice!=='apply')return;
+ }
+ texts[result.mode]={title:result.title,description:result.description};
+ if(mode===result.mode)showText();
+ renderPreview();updateLink();checkpoint();$('ai-status').textContent='已应用文案';$('ai-dialog').close();
+};
+window.addEventListener('pagehide',()=>aiController?.abort());
 // 各发布类型独立保存发布设置，日期为本机时区输入，传输时附带时区偏移。
 const defaultSettings=()=>({visibility:'public',download:'allow',publishTime:'now',scheduledAt:''});
 const settings={image:defaultSettings(),video:defaultSettings()};
@@ -49,6 +121,7 @@ function decide(title,message,choices){
  });
 }
 async function closeHost(host=false){
+ aiController?.abort();
  await store.pending;
  if(context?.nativeUIAvailable)await window.webkit.messageHandlers.pluginUI.postMessage({op:'close',host});
  else {ready=false;for(const child of document.body.children)child.hidden=true;const message=document.createElement('p');message.textContent='页面已关闭。可以关闭此标签页，重新打开会恢复保留的草稿。';message.style.padding='24px';document.body.append(message);}

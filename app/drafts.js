@@ -4,6 +4,8 @@ export const signature=draft=>JSON.stringify([draft.assetIDs,draft.title,draft.d
 export function normalize(raw){
  const data={version:1,bindingID:typeof raw?.bindingID==='string'?raw.bindingID:crypto.randomUUID(),activeMode:'image',modes:{},handledTransfers:[]};
  if(raw?.version!==1)return data;
+ data.aiPrompt=typeof raw.aiPrompt==='string'?raw.aiPrompt.slice(0,8000):undefined;
+ data.aiContext=typeof raw.aiContext==='string'?raw.aiContext.slice(0,6000):'';
  data.activeMode=modes.includes(raw.activeMode)?raw.activeMode:'image';
  data.handledTransfers=Array.isArray(raw.handledTransfers)?raw.handledTransfers.filter(x=>typeof x==='string').slice(-50):[];
  for(const mode of modes){const d=raw.modes?.[mode];if(!d||!Array.isArray(d.assetIDs)||typeof d.title!=='string'||typeof d.description!=='string')continue;
