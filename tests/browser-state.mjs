@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {reconcileBrowserState} from '../browser/browser-state.js';
+const saved={assets:[{assetID:'a',uri:'ra',revision:'1'},{assetID:'b',uri:'rb',revision:'1'}]};
+let state=reconcileBrowserState(saved,[{uri:'rb',index:0,ready:true}],1);
+assert.equal(state.assets[0].browserState,'removed');
+assert.equal(state.assets[0].uri,'ra');
+assert.equal(state.assets[1].browserIndex,0);
+assert.deepEqual(state.changes[0].removed,['ra']);
+state=reconcileBrowserState(state,[{uri:'new',name:'manual.jpg',index:0,ready:true},{uri:'rb',index:1,ready:true}],2);
+assert.deepEqual(state.changes[1].added,['new']);
+assert.equal(state.assets[1].browserIndex,1);
+const repeated=reconcileBrowserState(state,state.browser.images,3);
+assert.equal(repeated.changes.length,2);
+console.log('PASS browser deletion, addition/replacement, order and stable snapshot');

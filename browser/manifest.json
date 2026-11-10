@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "有序图库抖音联动",
+  "version": "1.0.0",
+  "description": "接收 App 插件中的图片或视频，交给抖音网页上传，由用户手动发布。",
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://creator.douyin.com/*"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "handoff-content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://creator.douyin.com/*"
+      ],
+      "js": [
+        "browser-observer.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "binary-frame.html",
+        "binary-frame.js",
+        "binary-store.js"
+      ],
+      "matches": [
+        "https://creator.douyin.com/*"
+      ]
+    }
+  ]
+}
