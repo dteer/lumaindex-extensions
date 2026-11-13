@@ -1,6 +1,6 @@
 'use strict';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
-import {defaultPrompt,generateCopy} from './ai-copy.js';
+import {defaultPrompt,generateCopy} from './ai-copy.js?copy=20261113-2';
 import {createPreviewWheel} from './preview-wheel.js';
 const context=window.pluginContext,$=id=>document.getElementById(id);
 let selected=[],loading=false,loadError=null,mode='image',focusedID=null,draggedID=null,previewKey='',previewAssetID=null,previewIndex=0,previewAnimation=null;
@@ -69,7 +69,7 @@ $('generate-copy').onclick=async()=>{
  $('ai-result').hidden=true;$('generate-copy').disabled=true;$('cancel-copy').hidden=false;$('ai-status').textContent='正在生成…';
  const timeout=setTimeout(()=>controller.abort(),185000);
  try{
-  const result=await generateCopy(context.apiBaseURL,$('ai-prompt').value,JSON.stringify({type:requestedMode==='video'?'视频':'图文',work:$('ai-context').value,title:$('title').value,description:$('description').value}),controller.signal,$('ai-use-images').checked?current().filter(a=>aiImageIDs.has(a.id)).map(a=>a.id):[]);
+  const result=await generateCopy(context.apiBaseURL,$('ai-prompt').value,JSON.stringify({type:requestedMode==='video'?'视频':'图文',work:$('ai-context').value}),controller.signal,$('ai-use-images').checked?current().filter(a=>aiImageIDs.has(a.id)).map(a=>a.id):[]);
   aiResult={...result,mode:requestedMode};$('ai-title').textContent=result.title;$('ai-description').textContent=result.description;$('ai-result').hidden=false;$('ai-status').textContent='生成完成，检查后可应用到'+(requestedMode==='video'?'视频':'图文')+'文案';
  }catch(error){$('ai-status').textContent=controller.signal.aborted?'生成已取消或超时，可重新生成':error.message;}
  finally{clearTimeout(timeout);aiController=null;$('generate-copy').disabled=false;$('cancel-copy').hidden=true;}
