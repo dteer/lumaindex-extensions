@@ -1,7 +1,7 @@
 'use strict';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
 import {defaultPrompt,generateCopy} from './ai-copy.js?copy=20261113-2';
-import {createPreviewWheel} from './preview-wheel.js';
+import {createPreviewWheel,createNativePreviewWheel} from './preview-wheel.js?gesture=20261113-native';
 const context=window.pluginContext,$=id=>document.getElementById(id);
 let selected=[],loading=false,loadError=null,mode='image',focusedID=null,draggedID=null,previewKey='',previewAssetID=null,previewIndex=0,previewAnimation=null;
 const current=()=>selected.filter(a=>a.kind===mode);
@@ -17,6 +17,9 @@ const store=new DraftStore(initial,async value=>{
 });
 let aiController=null,aiResult=null;
 let aiImageIDs=new Set();
+let aiImagesCollapsed=false;
+// 折叠只影响缩略图展示，不改变分析开关和图片选择。
+$('toggle-ai-images').onclick=()=>{aiImagesCollapsed=!aiImagesCollapsed;renderAIImages();};
 // AI 弹窗不占编辑区空间；关闭时取消未完成生成，保留已填写内容。
 $('open-ai').onclick=()=>{if(!loading&&!operationBusy){renderAIImages();$('ai-dialog').showModal();}};
 $('close-ai').onclick=()=>$('ai-dialog').close();
@@ -25,6 +28,7 @@ $('ai-prompt').value=store.data.aiPrompt??defaultPrompt;
 $('ai-context').value=store.data.aiContext||'';
 // 每次启用时默认首图；勾选仅存内存，重开插件默认不发送图片。
 $('ai-use-images').onchange=()=>{
+ aiImagesCollapsed=false;
  aiImageIDs=new Set($('ai-use-images').checked?current().filter(a=>a.kind==='image'&&!a.error).slice(0,1).map(a=>a.id):[]);
  renderAIImages();
 };
@@ -36,7 +40,10 @@ function renderAIImages(){
  $('ai-use-images').disabled=mode!=='image';
  if(mode!=='image'){$('ai-use-images').checked=false;aiImageIDs.clear();}
  const active=enabled&&mode==='image';
- $('ai-image-grid').hidden=!active;$('ai-image-grid').replaceChildren();
+ $('toggle-ai-images').hidden=!active;
+ $('toggle-ai-images').textContent=aiImagesCollapsed?'展开图片':'收起图片';
+ $('toggle-ai-images').setAttribute('aria-expanded',String(!aiImagesCollapsed));
+ $('ai-image-grid').hidden=!active||aiImagesCollapsed;$('ai-image-grid').replaceChildren();
  $('ai-image-note').textContent=mode!=='image'?'图片分析适用于图文作品，视频当前仅使用文字信息。':active?`将分析 ${aiImageIDs.size} 张缩略图（最多 6 张），发送至当前 AI 服务，用量和耗时会增加。`:'默认关闭，仅根据文字生成。';
  for(const asset of active?available:[]){
   const card=document.createElement('div');card.className='ai-image-card';
@@ -331,6 +338,32 @@ function stepPreview(direction){
  }
 }
 const previewStage=document.querySelector('.feed-stage');
+const previewPane=document.querySelector('.preview-pane');
+let previewHovered=previewPane.matches(':hover'),autoPreviewTimer=null;
+// 每次离开预览区重新计时；弹窗、后台页面、视频和加载期间不自动翻页。
+function scheduleAutoPreview(){
+ clearTimeout(autoPreviewTimer);autoPreviewTimer=null;
+ if(previewHovered||document.hidden||!document.hasFocus())return;
+ autoPreviewTimer=setTimeout(()=>{
+  autoPreviewTimer=null;
+  if(!previewHovered&&!document.hidden&&document.hasFocus()&&mode==='image'&&!loading&&!operationBusy&&!$('decision').open&&!$('lightbox').open&&!$('ai-dialog').open){
+   const items=current();
+   if(items.length>1){
+    const index=items.indexOf(focused());
+    stepPreview(index===items.length-1?-(items.length-1):1);
+   }
+  }
+  scheduleAutoPreview();
+ },3000);
+}
+previewPane.addEventListener('pointerenter',()=>{previewHovered=true;clearTimeout(autoPreviewTimer);autoPreviewTimer=null;});
+previewPane.addEventListener('pointerleave',()=>{previewHovered=false;scheduleAutoPreview();});
+document.addEventListener('visibilitychange',scheduleAutoPreview);
+window.addEventListener('focus',()=>{previewHovered=previewPane.matches(':hover');scheduleAutoPreview();});
+window.addEventListener('blur',()=>{clearTimeout(autoPreviewTimer);autoPreviewTimer=null;});
+window.addEventListener('pagehide',()=>{clearTimeout(autoPreviewTimer);autoPreviewTimer=null;});
+scheduleAutoPreview();
+
 
 // WebKit 内嵌页可能把滚动继续交给外层容器；在捕获阶段按指针位置路由。
 // 悬停时激活预览，但不打断标题、描述等输入框的编辑。
@@ -342,11 +375,23 @@ previewStage.addEventListener('pointerenter',()=>{
 });
 // 滚轮只选择完整的一页，避免惯性把轨道拖入未加载的远端页。
 const previewWheel=createPreviewWheel();
+const nativePreviewWheel=createNativePreviewWheel();
+window.addEventListener('luma:scroll',event=>{
+ if(!context.nativeScrollPhases)return;
+ const input=event.detail;
+ // 即便手势开始在预览区外，也记录阶段，移入时不把惯性视为新手势。
+ const direction=nativePreviewWheel(input);
+ const bounds=previewStage.getBoundingClientRect();
+ if(input.x<bounds.left||input.x>=bounds.right||input.y<bounds.top||input.y>=bounds.bottom)return;
+ if(mode!=='image'||current().length<2||input.control||loading||operationBusy||$('decision').open||$('lightbox').open||$('ai-dialog').open)return;
+ if(direction)stepPreview(direction);
+});
 document.addEventListener('wheel',event=>{
  const bounds=previewStage.getBoundingClientRect();
  if(event.clientX<bounds.left||event.clientX>=bounds.right||event.clientY<bounds.top||event.clientY>=bounds.bottom)return;
  if(mode!=='image'||current().length<2||event.ctrlKey||loading||operationBusy||$('decision').open||$('lightbox').open||$('ai-dialog').open)return;
  event.preventDefault();
+ if(context.nativeScrollPhases)return;
  const delta=Math.abs(event.deltaX)>Math.abs(event.deltaY)?event.deltaX:event.deltaY;
  const pixels=delta*(event.deltaMode===1?16:event.deltaMode===2?previewStage.clientHeight:1);
  const direction=previewWheel(pixels,performance.now());
