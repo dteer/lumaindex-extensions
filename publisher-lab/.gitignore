@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+output/
+dist/
+.playwright-cli/
+.env
+.env.*
+*.har
+*.log
+*.luma-plugin.zip

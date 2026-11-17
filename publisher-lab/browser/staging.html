@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>发布作品 · 有序图库</title>
+  <link rel="stylesheet" href="staging.css">
+</head>
+<body>
+  <header class="page-header"><div class="header-inner"><span class="brand-mark" aria-hidden="true">有序</span><span class="brand-name">图库发布助手</span><span class="header-divider" aria-hidden="true"></span><h1>发布作品</h1><span id="kind-label" class="kind-label">准备作品</span></div></header>
+  <main class="workspace">
+    <section id="progress-panel" class="progress-panel" aria-live="polite" aria-atomic="true" role="status">
+      <div class="progress-icon" aria-hidden="true"><span></span></div>
+      <div class="progress-copy"><h2 id="progress-message">正在接收作品信息…</h2><p id="progress-details">素材、文案和设置将在这里显示。</p></div>
+      <span id="progress-label" class="progress-label">准备中</span>
+    </section>
+    <div id="loading" class="loading-note">正在读取本次带入内容…</div>
+    <div id="content" class="content-layout" hidden>
+      <div class="form-column">
+        <section class="form-section" aria-labelledby="basic-heading">
+          <h2 id="basic-heading">基础信息</h2>
+          <div class="form-row"><label class="field-label" for="work-title">作品标题</label><div class="field-content"><input id="work-title" readonly placeholder="未填写标题" aria-readonly="true"><span id="title-count" class="counter"></span></div></div>
+          <div class="form-row"><label class="field-label" for="work-description">作品描述</label><div class="field-content"><textarea id="work-description" readonly placeholder="未填写描述" aria-readonly="true"></textarea><div class="field-foot"><span>话题和好友可在带入完成后继续添加</span><span id="description-count"></span></div></div></div>
+          <div id="cover-row" class="form-row" hidden><span class="field-label">封面设置</span><div class="cover-summary"><div id="cover-preview" class="cover-preview" aria-hidden="true"></div><div><strong id="cover-name"></strong><p id="cover-note" class="muted"></p></div></div></div>
+          <div class="form-row media-row"><span id="media-heading" class="field-label">作品素材</span><div class="field-content"><div class="media-heading"><span id="media-count"></span><span class="muted">按 App 中的顺序带入</span></div><div id="media-grid" class="media-grid" aria-labelledby="media-heading"></div></div></div>
+        </section>
+        <section class="form-section" aria-labelledby="settings-heading">
+          <h2 id="settings-heading">发布设置</h2>
+          <dl class="settings-list">
+            <div><dt>谁可以看</dt><dd id="visibility"></dd></div>
+            <div><dt>保存权限</dt><dd id="download"></dd></div>
+            <div><dt>发布时间</dt><dd id="publish-time"></dd></div>
+            <div><dt>标签位置</dt><dd id="location"></dd></div>
+            <div><dt>作品合集</dt><dd id="collection"></dd></div>
+          </dl>
+        </section>
+        <p class="editing-note">正在自动带入，当前内容只读。完成后会切换为抖音原生编辑界面，您可以继续修改，核对后手动发布。</p>
+      </div>
+      <aside class="preview-column" aria-labelledby="preview-heading">
+        <div class="preview-sticky"><div class="preview-heading"><h2 id="preview-heading">作品预览</h2><span id="preview-count"></span></div><div id="preview-frame" class="preview-frame"><img id="preview-image" alt="" hidden><div id="preview-placeholder" class="preview-placeholder"><span>素材预览</span><small id="preview-filename"></small></div><span id="video-badge" class="video-badge" hidden>视频封面预览</span></div><h3 id="preview-title"></h3><p id="preview-description"></p><p class="preview-note">点击左侧素材可切换预览<br>缩略图仅供查看，上传状态以上方提示为准</p></div>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="staging.js"></script>
+</body>
+</html>

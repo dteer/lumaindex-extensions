@@ -1,9 +1,10 @@
+import {directoryName,dateTag,withDateTag} from './ai-context.js';
 'use strict';
 import {editCoverCrop} from './cover-crop.js';
 import {locationPicker} from './location.js';
 import {collectionPicker} from './collection.js';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
-import {defaultPrompt,generateCopy} from './ai-copy.js?copy=20261113-2';
+import {defaultPrompt,generateCopy} from './ai-copy.js?copy=20261117-directory';
 import {createPreviewWheel,createNativePreviewWheel} from './preview-wheel.js?gesture=20261113-native';
 const context=window.pluginContext,$=id=>document.getElementById(id);
 let selected=[],loading=false,loadError=null,mode='image',focusedID=null,draggedID=null,previewKey='',previewAssetID=null,previewIndex=0,previewAnimation=null;
@@ -73,14 +74,16 @@ $('cancel-copy').onclick=()=>aiController?.abort();
 $('generate-copy').onclick=async()=>{
  if(aiController||loading||operationBusy)return;
  if($('ai-use-images').checked&&!aiImageIDs.size){$('ai-status').textContent='请至少勾选一张图片，或关闭图片分析';return;}
- if(!$('ai-prompt').value.trim()||!$('ai-context').value.trim()){$('ai-status').textContent='请填写提示词和作品信息';return;}
+ if(!$('ai-prompt').value.trim()||(!$('ai-context').value.trim()&&!current()[0]?.directoryName)){$('ai-status').textContent='请填写提示词和作品信息';return;}
  const controller=new AbortController();aiController=controller;aiResult=null;
  const requestedMode=mode;
+ const firstDirectory=current()[0]?.directoryName||'',generationDate=dateTag();
  $('ai-result').hidden=true;$('generate-copy').disabled=true;$('cancel-copy').hidden=false;$('ai-status').textContent='正在生成…';
  const timeout=setTimeout(()=>controller.abort(),185000);
  try{
-  const result=await generateCopy(context.apiBaseURL,$('ai-prompt').value,JSON.stringify({type:requestedMode==='video'?'视频':'图文',work:$('ai-context').value}),controller.signal,$('ai-use-images').checked?current().filter(a=>aiImageIDs.has(a.id)).map(a=>a.id):[]);
-  aiResult={...result,mode:requestedMode};$('ai-title').textContent=result.title;$('ai-description').textContent=result.description;$('ai-result').hidden=false;$('ai-status').textContent='生成完成，检查后可应用到'+(requestedMode==='video'?'视频':'图文')+'文案';
+  const result=await generateCopy(context.apiBaseURL,$('ai-prompt').value,JSON.stringify({type:requestedMode==='video'?'视频':'图文',work:$('ai-context').value,directoryName:firstDirectory,dateTag:generationDate}),controller.signal,$('ai-use-images').checked?current().filter(a=>aiImageIDs.has(a.id)).map(a=>a.id):[]);
+  result.description=withDateTag(result.description,generationDate);
+  aiResult={...result,mode:requestedMode,directoryName:firstDirectory};$('ai-title').textContent=result.title;$('ai-description').textContent=result.description;$('ai-result').hidden=false;$('ai-status').textContent='生成完成，检查后可应用到'+(requestedMode==='video'?'视频':'图文')+'文案';
  }catch(error){$('ai-status').textContent=controller.signal.aborted?'生成已取消或超时，可重新生成':error.message;}
  finally{clearTimeout(timeout);aiController=null;$('generate-copy').disabled=false;$('cancel-copy').hidden=true;}
 };
@@ -92,14 +95,15 @@ $('apply-copy').onclick=async()=>{
   const choice=await decide('替换现有文案？','将用本次 AI 结果替换'+(result.mode==='video'?'视频':'图文')+'的标题和描述。',[['cancel','取消'],['apply','替换','primary']]);if(choice!=='apply')return;
  }
  texts[result.mode]={title:result.title,description:result.description};
- if(mode===result.mode)showText();
+ if(result.directoryName){settings[result.mode].locationQuery=result.directoryName;settings[result.mode].location=null;}
+ if(mode===result.mode){showText();if(result.directoryName)locationUI.seed(result.directoryName);}
  renderPreview();updateLink();checkpoint();$('ai-status').textContent='已应用文案';$('ai-dialog').close();
 };
 window.addEventListener('pagehide',()=>aiController?.abort());
 // 各发布类型独立保存发布设置，日期为本机时区输入，传输时附带时区偏移。
 const defaultSettings=()=>({visibility:'public',download:'allow',publishTime:'now',scheduledAt:'',collection:null});
 const settings={image:defaultSettings(),video:defaultSettings()};
-const locationUI=locationPicker({baseURL:context?.apiBaseURL,getValue:()=>settings[mode].location,setValue:value=>settings[mode].location=value,changed:()=>{updateLink();checkpoint();}});
+const locationUI=locationPicker({baseURL:context?.apiBaseURL,getValue:()=>settings[mode].location,setValue:value=>settings[mode].location=value,getQuery:()=>settings[mode].locationQuery||'',setQuery:value=>settings[mode].locationQuery=value,changed:()=>{updateLink();checkpoint();}});
 const collectionUI=collectionPicker({baseURL:context?.apiBaseURL,getValue:()=>settings[mode].collection,setValue:value=>settings[mode].collection=value,getVisibility:()=>settings[mode].visibility,getKind:()=>mode,changed:()=>{updateLink();checkpoint();}});
 // 封面独立于正文顺序，以素材身份保存；移除对应素材后恢复为未指定。
 function renderCover(){
@@ -137,7 +141,7 @@ function showCoverMenu(event,asset){
 document.addEventListener('pointerdown',event=>{if(coverMenu&&!coverMenu.contains(event.target)){coverMenu.remove();coverMenu=null;}},true);
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&coverMenu){coverMenu.remove();coverMenu=null;}});
 document.addEventListener('scroll',()=>{coverMenu?.remove();coverMenu=null;},true);
-function captureSettings(){settings[mode]={coverAssetID:settings[mode].coverAssetID,coverCrop:settings[mode].coverCrop,location:settings[mode].location,collection:settings[mode].collection??null,visibility:document.querySelector('[name=visibility]:checked').value,download:document.querySelector('[name=download]:checked').value,publishTime:document.querySelector('[name=publishTime]:checked').value,scheduledAt:$('scheduled-at').value};}
+function captureSettings(){settings[mode]={coverAssetID:settings[mode].coverAssetID,coverCrop:settings[mode].coverCrop,location:settings[mode].location,locationQuery:settings[mode].locationQuery||'',collection:settings[mode].collection??null,visibility:document.querySelector('[name=visibility]:checked').value,download:document.querySelector('[name=download]:checked').value,publishTime:document.querySelector('[name=publishTime]:checked').value,scheduledAt:$('scheduled-at').value};}
 function showSettings(){locationUI.render();collectionUI.render();const value=settings[mode];for(const name of ['visibility','download','publishTime'])for(const field of document.querySelectorAll(`[name=${name}]`))field.checked=field.value===value[name];$('scheduled-at').value=value.scheduledAt||'';$('schedule-field').hidden=value.publishTime!=='scheduled';$('schedule-zone').textContent=Intl.DateTimeFormat().resolvedOptions().timeZone;}
 function settingsError(){const value=settings[mode],collectionIssue=collectionUI.error();if(collectionIssue)return collectionIssue;if(value.coverAssetID&&!value.coverCrop)return '请点击“编辑封面”确认裁剪后继续。';if(value.publishTime!=='scheduled')return '';const time=new Date(value.scheduledAt).getTime(),delta=time-Date.now();return !Number.isFinite(time)||delta<2*3600000||delta>14*86400000?'请选择 2 小时后至 14 天内的发布时间。':'';}
 function contentFor(kind){return {assetIDs:selected.filter(a=>a.kind===kind).map(a=>a.id),...texts[kind],settings:settings[kind]};}
@@ -311,7 +315,7 @@ async function readAssets(ids,assumedMode='image'){
    const valid=kind==='video'?/\.(mp4|mov|webm)$/i.test(name):/\.(jpe?g|png|webp|bmp|tiff?|heic|heif|avif|cr2|cr3|nef|nrw|arw|srf|sr2|dng|raf|orf|rw2|pef|srw|raw)$/i.test(name);
    // 所有带入与草稿恢复共用此入口，不支持的格式直接跳过，不占素材数量。
    if(!valid)continue;
-   if(!result.some(item=>item.id===resolvedID))result.push({id:resolvedID,name,kind,error:kind==='video'&&a.sizeBytes>80*1024*1024?'视频超过传输限制':null});
+   if(!result.some(item=>item.id===resolvedID))result.push({id:resolvedID,name,kind,directoryName:directoryName(a.directoryPath),error:kind==='video'&&a.sizeBytes>80*1024*1024?'视频超过传输限制':null});
   }catch(error){result.push({id,name:id,kind:assumedMode,error:error.message});}
  }return result;
 }

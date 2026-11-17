@@ -53,6 +53,11 @@ export function collectionPicker({baseURL,getValue,setValue,getVisibility,getKin
   if(loading||(!items.length&&!failure)){
    const empty=document.createElement('p');empty.className='collection-empty';empty.textContent=loading?'正在读取合集…':next===null?'当前账号暂无可选的普通合集':'本页暂无可选的普通合集';list.append(empty);
   }
+  if(failure){
+   const help=document.createElement('p');help.className='collection-empty';help.textContent=failure;list.append(help);
+   const url=bridge.connectionURL?.();
+   if(url){const link=document.createElement('a');link.href=url;link.target='_blank';link.rel='noopener';link.className='collection-more';link.textContent='连接 Chrome（手动打开）';list.append(link);}
+  }
   if(failure||(!loading&&next!==null)){
    const more=document.createElement('button');more.type='button';more.className='collection-more';more.textContent=accountChanged?'刷新合集':failure?'重试加载':'加载更多';
    more.onclick=()=>accountChanged?restart():load();list.append(more);

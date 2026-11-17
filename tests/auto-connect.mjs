@@ -47,17 +47,20 @@ try{
  const bridge=browserBridge('http://127.0.0.1:1234/api/v1');
  const collectionBridge=browserBridge('http://127.0.0.1:1234/api/v1/');
  assert.equal(collectionBridge,bridge);assert.equal(opened,0);
- // 地点与合集同时首次查询，只打开一个交接页并注册一个页面生命周期监听。
+ // 首次查询只显示指引，用户完成配对后共用连接。
+ await assert.rejects(bridge.request({keyword:'西湖'}),/请按步骤操作/);
+ assert.equal(opened,0);
+ Socket.all[0].receive({type:'ready'});
  const [result,collectionPage]=await Promise.all([
   bridge.request({keyword:'西湖'}),
   collectionBridge.queryCollections({kind:'image',cursor:'0'})
  ]);
- assert.equal(result.items[0].name,'西湖');assert.equal(opened,1);assert.equal(Socket.all.length,1);assert.equal(intervals.size,1);assert.equal(events.size,1);
+ assert.equal(result.items[0].name,'西湖');assert.equal(opened,0);assert.equal(Socket.all.length,1);assert.equal(intervals.size,1);assert.equal(events.size,1);
  assert.deepEqual(collectionPage,{account:'account-1',items:[{id:'mix-1',title:'旅行'}],nextCursor:'10'});
  const next=await collectionBridge.queryCollections({kind:'video',cursor:collectionPage.nextCursor});
  assert.equal(next.items[0].id,'mix-2');assert.equal(next.nextCursor,null);
  assert.deepEqual(Socket.all[0].sent.at(-1).params,{kind:'video',cursor:'10'});
- await bridge.request({keyword:'故宫'});assert.equal(opened,1);
+ await bridge.request({keyword:'故宫'});assert.equal(opened,0);
  await assert.rejects(collectionBridge.queryCollections({kind:'image',cursor:'failure'}),/账号已切换/);
  await assert.rejects(collectionBridge.queryCollections({kind:'image',cursor:'missing-error'}),/合集查询失败/);
  // 已取消或在途取消均不影响其他业务，晚到的合集响应不能恢复已取消请求。
@@ -93,8 +96,10 @@ try{
  await new Promise(resolve=>setImmediate(resolve));
  current.receive({type:'connection-error',error:'连接已关闭'});
  await assert.rejects(disconnected,/连接已关闭/);assert.equal(current.readyState,3);assert.equal(timers.size,0);assert.equal(intervals.size,0);
+ await assert.rejects(bridge.request({keyword:'重连'}),/请按步骤操作/);
+ Socket.all[1].receive({type:'ready'});
  await Promise.all([bridge.request({keyword:'重连'}),collectionBridge.queryCollections({kind:'video',cursor:'0'})]);
- assert.equal(opened,2);assert.equal(Socket.all.length,2);assert.equal(intervals.size,1);
+ assert.equal(opened,0);assert.equal(Socket.all.length,2);assert.equal(intervals.size,1);
  const closedPage=collectionBridge.queryCollections({kind:'image',cursor:'hold'});
  await new Promise(resolve=>setImmediate(resolve));
  events.get('pagehide')();await assert.rejects(closedPage,/浏览器连接已断开/);

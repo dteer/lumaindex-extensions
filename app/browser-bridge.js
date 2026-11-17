@@ -1,7 +1,7 @@
 // 同一 App 页面内的地点和合集查询共享连接，避免两个模块重新配对时相互断开。
 const clients=new Map();
 
-// browserBridge 按本机服务地址复用客户端；首次查询才打开 Chrome 交接页。
+// browserBridge 按本机服务地址复用客户端；查询不会自动打开 Chrome，配对入口由用户主动点击。
 export function browserBridge(baseURL){
  // 预览页面可能没有宿主上下文，初始化保持可用，查询时再提示从 App 打开。
  let endpoint='';
@@ -12,14 +12,16 @@ export function browserBridge(baseURL){
 
 // createClient 统一管理查询、取消及连接生命周期，Chrome 后台负责维持配对通道。
 function createClient(baseURL){
- let socket,heartbeat,connected=false,lastSeen=0,connecting=null,connectionError='';
+ let socket,heartbeat,connected=false,lastSeen=0,connecting=null,connectionError='',relayURL='';
  const pending=new Map();
+ const connectionHelp='尚未连接 Chrome。请按步骤操作：① 打开 Chrome，安装或启用“有序图库抖音联动”扩展，并开启“启用 App 连接”；② 点击下方“连接 Chrome”，完成连接并登录抖音创作者中心；③ 回到此处点击刷新或重试。';
  // 连接失效时逐一清除查询定时器和取消监听，调用方保留各自的已有结果。
  const rejectAll=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error(connectionError||'浏览器连接已断开，请重试查询'));}pending.clear();};
  // ensureConnected 合并并发建连，地点和合集不会分别打开交接页。
  function ensureConnected(){
   if(connected&&socket?.readyState===WebSocket.OPEN)return Promise.resolve();
   if(connecting)return connecting;
+  if(socket?.readyState===WebSocket.OPEN)return Promise.reject(Error(connectionHelp));
   // 本机桥接仅允许宿主固定 API 根路径，不能因错误上下文向外部站点建立连接。
   try{
    const source=new URL(baseURL);
@@ -33,9 +35,9 @@ function createClient(baseURL){
    const current=new WebSocket(base.href+'app');socket=current;
    const timeout=setTimeout(()=>{connectionError='连接 Chrome 超时，请确认 Chrome 已打开、扩展已启用且“启用 App 连接”已开启，然后重试。';reject(Error(connectionError));current.close();},12000);
    current.onopen=()=>{
-    // 通过宿主现有外链处理打开交接页；仅传递一次配对信息，无需用户点击。
-    const relay=new URL('relay.html',location.href);relay.hash=channel;
-    const link=document.createElement('a');link.href=relay.href;link.target='_blank';link.rel='noopener';link.hidden=true;document.body.append(link);link.click();link.remove();
+    // 只准备配对入口，不在查询过程中抢焦点或打开浏览器。
+    const relay=new URL('relay.html',location.href);relay.hash=channel;relayURL=relay.href;
+    clearTimeout(timeout);reject(Error(connectionHelp));
    };
    current.onmessage=e=>{
     if(socket!==current)return;
@@ -74,6 +76,8 @@ function createClient(baseURL){
    });
  }
  return {
+  // connectionURL 仅供用户点击的连接入口；读取不会触发导航。
+  connectionURL(){return connected?'':relayURL;},
   // request 保持地点查询的既有接口，成功时直接返回 data。
   request(params,signal){return sendRequest('location-search','地点',params,signal);},
   // queryCollections 查询当前抖音账号的一页合集；50 秒时限容纳后台查询前后的账号核对。

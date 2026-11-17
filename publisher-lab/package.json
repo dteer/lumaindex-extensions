@@ -1,0 +1,15 @@
+{
+  "name": "lumaindex-publisher-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/isolation.mjs && node tests/publication-store.mjs && node tests/native-publication-store.mjs && node tests/publication-payload.mjs && node tests/creator-api.mjs && node tests/worker.mjs && node tests/native-transport.mjs && node tests/native-engine.mjs && node tests/native-cancellation.mjs && node tests/library-selection.mjs",
+    "test:reference": "node tests/studio-bridge.mjs && node tests/legacy-chrome-client.mjs",
+    "build": "node build.mjs",
+    "test:ui": "node tests/native-ui.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.1"
+  }
+}

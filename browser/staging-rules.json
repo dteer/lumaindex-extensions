@@ -13,7 +13,28 @@
       ]
     },
     "condition": {
-      "regexFilter": "^https://creator[.]douyin[.]com/creator-micro/content/post/(image|video)[?]luma_import=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "regexFilter": "^https://creator[.]douyin[.]com/creator-micro/content/post/image[?]luma_import=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "isUrlFilterCaseSensitive": true,
+      "resourceTypes": [
+        "main_frame"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "Content-Security-Policy",
+          "operation": "append",
+          "value": "script-src 'none'"
+        }
+      ]
+    },
+    "condition": {
+      "regexFilter": "^https://creator[.]douyin[.]com/creator-micro/content/post/video[?]luma_import=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
       "isUrlFilterCaseSensitive": true,
       "resourceTypes": [
         "main_frame"

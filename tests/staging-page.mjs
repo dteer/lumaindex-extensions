@@ -17,13 +17,13 @@ assert.equal(registration.all_frames, undefined);
 assert.notEqual(registration.world, 'MAIN');
 assert.ok(manifest.permissions.includes('declarativeNetRequestWithHostAccess'));
 assert.equal(manifest.declarative_net_request.rule_resources.find(entry => entry.path === 'staging-rules.json')?.enabled, true);
-assert.equal(rules.length, 1);
+assert.equal(rules.length, 2);
 const [rule] = rules;
 assert.equal(rule.action.type, 'modifyHeaders');
 assert.deepEqual(rule.condition.resourceTypes, ['main_frame']);
 assert.equal(rule.condition.isUrlFilterCaseSensitive, true);
 assert.deepEqual(rule.action.responseHeaders, [{header: 'Content-Security-Policy', operation: 'append', value: "script-src 'none'"}]);
-const stagePattern = new RegExp(rule.condition.regexFilter);
+const stagePattern = {test: value => rules.some(rule => new RegExp(rule.condition.regexFilter).test(value))};
 
 // contentFixture 使用正常完成解析的原文档；禁止中止加载、重开文档和 HTML 字符串注入。
 function contentFixture(href, {empty = false, parsed = 'full'} = {}) {

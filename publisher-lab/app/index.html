@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>抖音发布工作台（实验版）</title>
+  <link rel="stylesheet" href="./studio.css">
+</head>
+<body data-phase="upload">
+  <header class="studio-toolbar">
+    <div class="draft-toolbar">
+      <input id="draft-name" class="draft-name" aria-label="草稿名称" maxlength="100">
+      <span id="save-state" class="muted" role="status">本机草稿</span>
+      <div class="icon-actions">
+        <button id="duplicate" title="复制草稿">复制</button>
+        <button id="delete-draft" class="subtle-danger" title="删除当前本机草稿">删除</button>
+      </div>
+    </div>
+    <div class="toolbar-actions">
+      <button id="open-drafts" class="text-button">草稿 <span id="draft-total" class="counter">1</span></button>
+      <details id="account-menu" class="account-menu">
+        <summary aria-label="账号与登录"><span id="connection-dot" class="status-dot"></span><span id="connection-label">尚未验证账号</span><span class="menu-chevron" aria-hidden="true"></span></summary>
+        <div class="account-actions">
+          <button id="connect">检查会话</button>
+          <button id="import-session">登录抖音</button>
+          <button id="clear-session">清除</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <div class="publisher-page">
+    <div class="feedback-region">
+      <div id="connection-banner" class="connection-banner" role="status" hidden><span id="connection-message"></span></div>
+      <div id="page-notice" class="notice" role="status" hidden></div>
+    </div>
+    <nav class="publish-tabs" aria-label="作品类型">
+      <div role="tablist">
+        <button id="mode-video" role="tab" aria-selected="false">发布视频</button>
+        <button id="mode-image" role="tab" aria-selected="true">发布图文</button>
+        <button role="tab" aria-selected="false" disabled title="全景视频暂未接入">发布全景视频</button>
+        <button role="tab" aria-selected="false" disabled title="文章暂未接入">发布文章</button>
+      </div>
+    </nav>
+    <main class="workspace">
+      <section class="upload-landing" aria-label="选择作品素材">
+        <div class="upload-specs">
+          <div class="upload-spec"><span class="spec-symbol folder-symbol" aria-hidden="true">▱</span><div><strong id="spec-size-title">图片大小和格式</strong><p id="spec-size-description">支持 JPEG、PNG、WebP，每张图片不超过 50 MiB。</p></div></div>
+          <div class="upload-spec"><span class="spec-symbol quality-symbol" aria-hidden="true">HD</span><div><strong id="spec-quality-title">图片数量</strong><p id="spec-quality-description">每篇图文可添加 1–35 张图片，支持调整顺序和编辑封面。</p></div></div>
+          <div class="upload-spec"><span class="spec-symbol ratio-symbol" aria-hidden="true"></span><div><strong id="spec-ratio-title">作品素材</strong><p id="spec-ratio-description">选择图库内的原始素材，上传前可预览并核对作品内容。</p></div></div>
+        </div>
+        <div id="media-empty" class="media-empty">
+          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M19 45H16a12 12 0 0 1-1-24 18 18 0 0 1 34-1 13 13 0 0 1 0 26h-4" fill="currentColor" opacity=".35"/><path d="M32 49V25m-9 9 9-9 9 9" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <strong id="upload-title">选择图片，开始发布图文</strong>
+          <p id="upload-description">前往来源勾选素材，确认添加后继续编辑作品。</p>
+          <button id="choose-upload" class="primary upload-button"><span aria-hidden="true">＋</span><span id="upload-button-label">选择图库图片</span></button>
+          <small>也可在图库中选中素材，通过「插件 → 导入」带入</small>
+        </div>
+      </section>
+
+      <section class="editor-column" aria-label="作品编辑">
+        <div class="editor-scroll">
+          <section class="official-card basic-card">
+            <section class="panel content-panel">
+              <div class="section-heading"><h2>基础信息</h2><button id="open-ai" class="text-button">✧ AI 文案</button></div>
+              <div class="subheading"><h3>作品描述</h3></div>
+              <div class="description-editor">
+                <label class="visually-hidden" for="title">标题</label>
+                <div class="title-field"><input id="title" placeholder="添加作品标题" maxlength="20" autocomplete="off"><span id="title-count" class="muted">0 / 20</span></div>
+                <label class="visually-hidden" for="description">描述</label>
+                <textarea id="description" placeholder="添加作品描述…" maxlength="1000" rows="4"></textarea>
+                <div class="description-footer"><div class="content-tools"><button id="search-topics" data-operation="topics.search">＃ 添加话题</button><button id="search-mentions" data-operation="users.search">＠ 好友</button></div><span id="description-count" class="muted">0 / 1000</span></div>
+              </div>
+              <div id="topics-chips" class="chips" aria-label="已选话题"></div>
+              <div id="mentions-chips" class="chips" aria-label="已提及用户"></div>
+            </section>
+
+            <section class="panel cover-panel">
+              <h3 class="row-label">封面设置</h3>
+              <div class="cover-row">
+                <div id="cover-preview" class="cover-preview"><span>封面</span></div>
+                <div class="cover-details"><strong id="cover-name">未指定封面</strong><span id="cover-note" class="muted">选择图片后可设为封面</span></div>
+                <div class="inline-actions"><button id="choose-cover">选择图片</button><button id="crop-cover" hidden>编辑封面</button><button id="choose-frame" hidden data-operation="cover.frames">选择视频帧</button><button id="clear-cover" class="text-button" hidden>清除</button></div>
+              </div>
+            </section>
+
+            <section class="panel media-panel">
+              <h3 class="row-label" id="media-heading">编辑图片</h3>
+              <div class="media-content">
+                <div class="media-toolbar"><span id="media-count" class="counter">0</span><div class="inline-actions"><button id="import-host" class="text-button">从来源选择</button><button id="add-library-media" class="text-button">＋ 继续添加</button><label class="file-button" for="preview-files" id="preview-file-label" hidden>选择本机预览<input id="preview-files" type="file" accept="image/*,video/*" multiple hidden></label></div></div>
+                <div id="media-grid" class="media-grid"></div>
+                <div class="media-tools"><span id="media-note" class="muted">拖动调整顺序 · 单击预览</span><div><button id="move-left" aria-label="将当前素材前移">←</button><button id="move-right" aria-label="将当前素材后移">→</button></div></div>
+              </div>
+            </section>
+
+            <section class="panel collection-panel">
+              <div class="resource-row"><label>添加合集</label><div class="resource-field"><span id="collection-name" class="muted">不加入合集</span><div class="inline-actions"><button id="clear-collection" class="text-button" hidden>清除</button><button id="search-collection" class="field-action" data-operation="collections.list">选择合集</button></div></div></div>
+              <div class="declaration-placeholder"><label for="unsupported-declaration">自主声明</label><select id="unsupported-declaration" disabled><option>请选择声明（暂未接入）</option></select></div>
+            </section>
+          </section>
+
+          <section class="panel official-card extended-panel">
+            <div class="section-heading"><h2>扩展信息</h2></div>
+            <div class="resource-row"><label>选择音乐</label><div class="resource-field"><span id="music-name" class="muted">未添加</span><div class="inline-actions"><button id="preview-music" hidden>试听</button><button id="clear-music" class="text-button" hidden>移除</button><button id="search-music" class="field-action" data-operation="music.search">选择配乐</button></div></div></div>
+            <audio id="music-player" controls hidden preload="none"></audio>
+            <div class="resource-row"><label>添加标签</label><div class="resource-field"><span id="location-name" class="muted">不添加位置</span><div class="inline-actions"><button id="clear-location" class="text-button" hidden>清除</button><button id="search-location" data-operation="locations.search">位置</button><button disabled title="关联热点暂未接入">关联热点</button></div></div></div>
+          </section>
+
+          <section class="panel official-card settings-panel">
+            <div class="section-heading"><h2>发布设置</h2></div>
+            <div class="settings-grid">
+              <div class="setting-row"><span class="setting-label" id="visibility-label">谁可以看</span><div id="visibility" class="radio-options" role="radiogroup" aria-labelledby="visibility-label"></div></div>
+              <div class="setting-row"><span class="setting-label" id="download-label">保存权限</span><div id="download" class="radio-options" role="radiogroup" aria-labelledby="download-label"></div></div>
+              <div class="setting-row"><span class="setting-label" id="publish-time-label">发布时间</span><div class="radio-options" role="radiogroup" aria-labelledby="publish-time-label"><label><input id="immediate" type="radio" name="publish-time" value="now" checked>立即发布</label><label><input id="scheduled" type="radio" name="publish-time" value="scheduled">定时发布</label></div></div>
+            </div>
+            <div class="schedule-row"><span id="timezone" class="muted"></span></div>
+            <div id="schedule-fields" hidden><label class="field-label" for="scheduled-at">发布时间</label><input id="scheduled-at" type="datetime-local"><p class="helper">按当前时区保存草稿；准备时核对可发布时间范围。</p></div>
+            <div id="declarations" class="declarations" hidden></div>
+          </section>
+
+          <section id="activity-panel" class="panel activity-panel" hidden><div class="section-heading"><h2>本次进度</h2><button id="cancel-operation" hidden>取消等待</button></div><p id="activity-message" role="status"></p><progress id="activity-progress" hidden max="100"></progress><div id="activity-items" class="activity-items"></div></section>
+        </div>
+        <footer class="actionbar"><div class="action-status"><strong id="work-state">编辑作品</strong><small id="validation-summary">先登录抖音并核对账号</small></div><div class="publish-actions"><button id="publish" class="primary">发布…</button><button id="prepare">上传并检查</button><button id="save-draft">保存草稿</button></div></footer>
+      </section>
+
+      <aside class="preview-column" aria-label="作品预览">
+        <div class="preview-heading"><strong>预览图文</strong><span>编辑预览</span></div>
+        <div class="preview-card">
+          <div class="preview-app-tabs" aria-hidden="true"><span>关注</span><span class="active">推荐</span><span class="preview-search-icon"></span></div>
+          <div id="preview-stage" class="preview-stage" tabindex="0"><div class="preview-placeholder">素材预览</div></div>
+          <div class="preview-body"><div class="preview-account"><span id="account-avatar" class="account-avatar">○</span><span id="preview-account-name">尚未验证发布账号</span></div><strong id="preview-title"></strong><p id="preview-description"></p><div id="preview-tags" class="preview-tags"></div></div>
+          <div class="preview-navigation"><button id="preview-previous" aria-label="上一张">←</button><span id="preview-position">0 / 0</span><button id="preview-next" aria-label="下一张">→</button></div>
+          <div class="preview-app-nav" aria-hidden="true"><span>首页</span><span>朋友</span><span class="preview-plus">＋</span><span>消息</span><span>我</span></div>
+        </div>
+        <div class="preview-note">预览仅展示素材与文案</div>
+        <section id="receipt-panel" class="receipt-panel" hidden><div class="section-heading"><h2 id="receipt-title">发布状态</h2></div><p id="receipt-message"></p><small id="receipt-id" class="muted"></small><div class="inline-actions"><button id="refresh-publication">查询发布状态</button><a id="publication-link" target="_blank" rel="noopener" hidden>查看作品 ↗</a></div></section>
+        <details class="capability-panel"><summary>当前账号可用能力</summary><p class="experiment-banner">实验版：图文与普通视频已接入，最终发布待实机验证。全景视频与文章暂未接入，实际发布状态以平台回执为准。</p><div id="capability-list">核对账号后读取</div></details>
+      </aside>
+    </main>
+  </div>
+
+  <dialog id="drafts-dialog" class="drafts-dialog" aria-label="本机草稿"><aside class="draft-sidebar"><div class="dialog-header"><h2>本机草稿</h2><button id="close-drafts" aria-label="关闭草稿">×</button></div><div class="new-drafts"><button id="new-image">＋ 新建图文</button><button id="new-video">＋ 新建视频</button></div><div id="draft-list" class="draft-list"></div><div class="sidebar-foot"><span class="local-dot"></span>草稿保存在本机，上传后仍需确认发布。</div></aside></dialog>
+  <dialog id="search-dialog" class="search-dialog"><div class="dialog-header"><h2 id="search-heading">搜索</h2><button id="search-close" aria-label="关闭搜索">×</button></div><form id="search-form" class="search-bar"><input id="search-query" placeholder="输入关键词" autocomplete="off"><button id="run-search" class="primary" type="submit">搜索</button></form><p id="search-message" class="helper" role="status"></p><div id="search-results" class="search-results"></div><button id="search-more" hidden>加载更多</button><div class="dialog-footer"><button id="search-done">完成</button></div></dialog>
+  <dialog id="confirm-dialog" class="confirm-dialog"><div class="dialog-header"><h2 id="confirm-title">确认操作</h2></div><div id="confirm-content"></div><div class="dialog-footer"><button id="confirm-cancel">取消</button><button id="confirm-submit" class="primary">确认</button></div></dialog>
+  <dialog id="ai-dialog" class="ai-dialog"><div class="dialog-header"><h2>AI 文案</h2><button id="ai-close" aria-label="关闭 AI 文案">×</button></div><label class="field-label" for="ai-context">作品信息</label><textarea id="ai-context" rows="4" placeholder="说明主题、拍摄背景和期望语气。仅发送这里的文字。"></textarea><label class="field-label" for="ai-prompt">创作要求</label><textarea id="ai-prompt" rows="3">为这份作品写自然、具体的中文标题和描述。只根据我提供的信息，不编造人物、地点或经历。</textarea><p id="ai-status" class="helper" role="status">使用图库已配置的 AI 连接。</p><div id="ai-result" hidden><strong id="ai-result-title"></strong><p id="ai-result-description"></p></div><div class="dialog-footer"><button id="ai-generate">生成文案</button><button id="ai-apply" class="primary" disabled>应用</button></div></dialog>
+  <script type="module" src="./studio.js"></script>
+</body>
+</html>

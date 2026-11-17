@@ -1,7 +1,7 @@
 import {matchCity} from './city-match.js';
 import {browserBridge} from './browser-bridge.js';
 // 地点选择只保存城市和真实 POI 身份，查询失败不产生虚假的可选地点。
-export function locationPicker({baseURL,getValue,setValue,changed}){
+export function locationPicker({baseURL,getValue,setValue,getQuery=()=>'',setQuery=()=>{},changed}){
  const $=id=>document.getElementById(id),city=$('location-city'),query=$('location-query'),citiesBox=$('city-options'),box=$('location-options'),status=$('location-status');
  const bridge=browserBridge(baseURL);
  let cities=[],timer,controller,generation=0,next=1,loading=false,items=[],failed=false,confirmedQuery=null;
@@ -9,7 +9,7 @@ export function locationPicker({baseURL,getValue,setValue,changed}){
  const close=()=>{citiesBox.hidden=true;box.hidden=true;};
  // 切换模式、城市或查询词时取消旧请求，防止旧结果覆盖新草稿。
  function cancel(){clearTimeout(timer);controller?.abort();generation++;loading=false;}
- function render(){cancel();items=[];next=1;failed=false;const v=getValue();city.value=v?.cityName||'';query.value=v?.name||'';query.disabled=false;confirmedQuery=null;close();status.textContent='';}
+ function render(){cancel();items=[];next=1;failed=false;const v=getValue();city.value=v?.cityName||'';query.value=v?.name||getQuery();query.disabled=false;confirmedQuery=null;close();status.textContent='';}
  function cityOptions(){
   citiesBox.replaceChildren();citiesBox.hidden=false;box.hidden=true;
   for(const c of cities.filter(x=>x.name.includes(city.value.trim()))){
@@ -46,14 +46,16 @@ export function locationPicker({baseURL,getValue,setValue,changed}){
    const page=await bridge.request({cityCode:v.cityCode,cityName:v.cityName,keyword,page:next},controller.signal);
    if(version!==generation)return;
    items.push(...page.items.filter(x=>!items.some(y=>y.id===x.id)));next=page.nextPage??null;status.textContent='';
-  }catch(e){if(version!==generation||e.name==='AbortError')return;failed=true;status.textContent=e.message;}
+  }catch(e){if(version!==generation||e.name==='AbortError')return;failed=true;status.textContent=e.message;const url=bridge.connectionURL?.();if(url){const link=document.createElement('a');link.href=url;link.target='_blank';link.rel='noopener';link.textContent=' 连接 Chrome（手动打开）';status.append(link);}}
   finally{if(version===generation){loading=false;draw();}}
  }
- query.oninput=()=>{cancel();const v=getValue();confirmedQuery=null;setValue(v?.cityCode?{cityCode:v.cityCode,cityName:v.cityName}:null);changed();items=[];next=1;failed=false;status.textContent='';close();timer=setTimeout(load,400);};
+ query.oninput=()=>{setQuery(query.value);cancel();const v=getValue();confirmedQuery=null;setValue(v?.cityCode?{cityCode:v.cityCode,cityName:v.cityName}:null);changed();items=[];next=1;failed=false;status.textContent='';close();timer=setTimeout(load,400);};
  query.onfocus=()=>{if(items.length)draw();};
  query.onkeydown=e=>{if(e.key==='Escape')close();if(e.key==='Enter'){e.preventDefault();clearTimeout(timer);load();}};
  box.onscroll=()=>{if(box.scrollHeight-box.scrollTop-box.clientHeight<box.clientHeight&&!failed)load();};
- $('location-clear').onclick=()=>{setValue(null);render();changed();};
+ $('location-clear').onclick=()=>{setQuery('');setValue(null);render();changed();};
  document.addEventListener('click',e=>{if(!$('location-picker').contains(e.target)){close();city.value=getValue()?.cityName||'';}});
- return {render};
+ // 目录名仅作为查询词，真实 POI 由用户从查询结果确认。
+ function seed(value){cancel();setValue(null);setQuery(value);render();query.value=value;changed();load();}
+ return {render,seed};
 }

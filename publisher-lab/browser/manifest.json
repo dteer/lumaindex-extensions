@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "有序图库发布工作台（实验版）",
+  "version": "0.1.0",
+  "description": "独立实验工作台：通过当前浏览器账号连接，上传素材并处理用户确认的发布任务。",
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://creator.douyin.com/*",
+    "https://imagex.bytedanceapi.com/*",
+    "https://vod.bytedanceapi.com/*",
+    "https://*.bytedancevod.com/*",
+    "https://*.snssdk.com/*",
+    "https://*.douyin.com/*"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "relay-content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "有序图库发布工作台（实验版） · 连接状态",
+    "default_popup": "settings.html"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
+  }
+}
