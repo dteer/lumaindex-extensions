@@ -9,6 +9,7 @@ await mkdir(output,{recursive:true});
 const archive=join(output,'抖音发布助手.luma-plugin.zip');
 await rm(archive,{force:true});
 execFileSync('/usr/bin/zip',['-q',archive,...(await readdir(join(root,'app'),{withFileTypes:true})).filter(entry=>entry.isFile()).map(entry=>entry.name)],{cwd:join(root,'app')});
+await rm(join(output,'Chrome扩展'),{recursive:true,force:true});
 await cp(join(root,'browser'),join(output,'Chrome扩展'),{recursive:true});
 await copyFile(join(root,'README.md'),join(output,'使用说明.md'));
 console.log(output);

@@ -1,4 +1,7 @@
 'use strict';
+import {editCoverCrop} from './cover-crop.js';
+import {locationPicker} from './location.js';
+import {collectionPicker} from './collection.js';
 import {DraftStore,signature,mergeDraftAssets} from './drafts.js';
 import {defaultPrompt,generateCopy} from './ai-copy.js?copy=20261113-2';
 import {createPreviewWheel,createNativePreviewWheel} from './preview-wheel.js?gesture=20261113-native';
@@ -94,11 +97,49 @@ $('apply-copy').onclick=async()=>{
 };
 window.addEventListener('pagehide',()=>aiController?.abort());
 // 各发布类型独立保存发布设置，日期为本机时区输入，传输时附带时区偏移。
-const defaultSettings=()=>({visibility:'public',download:'allow',publishTime:'now',scheduledAt:''});
+const defaultSettings=()=>({visibility:'public',download:'allow',publishTime:'now',scheduledAt:'',collection:null});
 const settings={image:defaultSettings(),video:defaultSettings()};
-function captureSettings(){settings[mode]={visibility:document.querySelector('[name=visibility]:checked').value,download:document.querySelector('[name=download]:checked').value,publishTime:document.querySelector('[name=publishTime]:checked').value,scheduledAt:$('scheduled-at').value};}
-function showSettings(){const value=settings[mode];for(const name of ['visibility','download','publishTime'])for(const field of document.querySelectorAll(`[name=${name}]`))field.checked=field.value===value[name];$('scheduled-at').value=value.scheduledAt||'';$('schedule-field').hidden=value.publishTime!=='scheduled';$('schedule-zone').textContent=Intl.DateTimeFormat().resolvedOptions().timeZone;}
-function settingsError(){const value=settings[mode];if(value.publishTime!=='scheduled')return '';const time=new Date(value.scheduledAt).getTime(),delta=time-Date.now();return !Number.isFinite(time)||delta<2*3600000||delta>14*86400000?'请选择 2 小时后至 14 天内的发布时间。':'';}
+const locationUI=locationPicker({baseURL:context?.apiBaseURL,getValue:()=>settings[mode].location,setValue:value=>settings[mode].location=value,changed:()=>{updateLink();checkpoint();}});
+const collectionUI=collectionPicker({baseURL:context?.apiBaseURL,getValue:()=>settings[mode].collection,setValue:value=>settings[mode].collection=value,getVisibility:()=>settings[mode].visibility,getKind:()=>mode,changed:()=>{updateLink();checkpoint();}});
+// 封面独立于正文顺序，以素材身份保存；移除对应素材后恢复为未指定。
+function renderCover(){
+ $('cover-row').hidden=mode!=='image';
+ const images=current().filter(a=>a.kind==='image'&&!a.error);
+ const cover=images.find(a=>a.id===settings[mode].coverAssetID);
+ if(!cover){delete settings[mode].coverAssetID;delete settings[mode].coverCrop;}
+ $('edit-cover').disabled=!cover||loading;
+ $('cover-thumb').replaceChildren();if(cover){const img=imageFor(cover);$('cover-thumb').append(img);const crop=settings[mode].coverCrop;if(crop){const source=new Image();source.onload=()=>{if(!img.isConnected)return;const canvas=document.createElement('canvas');canvas.width=60;canvas.height=Math.round(60*crop.height*source.naturalHeight/(crop.width*source.naturalWidth));canvas.getContext('2d').drawImage(source,crop.x*source.naturalWidth,crop.y*source.naturalHeight,crop.width*source.naturalWidth,crop.height*source.naturalHeight,0,0,canvas.width,canvas.height);img.replaceWith(canvas);};source.src=`${context.apiBaseURL}/assets/${encodeURIComponent(cover.id)}/preview?size=2048`;}}
+ $('cover-name').textContent=cover?cover.name:'右键作品素材，设为封面';
+ }
+// 编辑当前封面；选图使用正文素材右键菜单，不再复制一组缩略图。
+$('edit-cover').onclick=async()=>{
+ const kind=mode,images=current().filter(a=>a.kind==='image'&&!a.error),asset=images.find(a=>a.id===settings[kind].coverAssetID);
+ if(!asset)return;
+ const crop=await editCoverCrop({asset,first:images[0],baseURL:context.apiBaseURL,previous:settings[kind].coverCrop});
+ if(!crop)return;settings[kind].coverCrop=crop;renderCover();updateLink();checkpoint();
+};
+let coverMenu=null;
+// 右键菜单只设置封面身份，不改变图片顺序、焦点或原始文件。
+function showCoverMenu(event,asset){
+ event.preventDefault();coverMenu?.remove();
+ if(loading||operationBusy||asset.error||mode!=='image')return;
+ const menu=document.createElement('div');menu.className='cover-context-menu';menu.setAttribute('role','menu');
+ const button=document.createElement('button');button.type='button';button.setAttribute('role','menuitem');button.textContent='设为封面';
+ button.onclick=async()=>{
+  menu.remove();coverMenu=null;
+  const images=current().filter(a=>a.kind==='image'&&!a.error);
+  const crop=await editCoverCrop({asset,first:images[0],baseURL:context.apiBaseURL,previous:settings.image.coverAssetID===asset.id?settings.image.coverCrop:null});
+  if(!crop)return;settings.image.coverAssetID=asset.id;settings.image.coverCrop=crop;render();
+ };
+ menu.append(button);document.body.append(menu);coverMenu=menu;
+ const rect=menu.getBoundingClientRect();menu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-rect.width-8))+'px';menu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-rect.height-8))+'px';button.focus();
+}
+document.addEventListener('pointerdown',event=>{if(coverMenu&&!coverMenu.contains(event.target)){coverMenu.remove();coverMenu=null;}},true);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&coverMenu){coverMenu.remove();coverMenu=null;}});
+document.addEventListener('scroll',()=>{coverMenu?.remove();coverMenu=null;},true);
+function captureSettings(){settings[mode]={coverAssetID:settings[mode].coverAssetID,coverCrop:settings[mode].coverCrop,location:settings[mode].location,collection:settings[mode].collection??null,visibility:document.querySelector('[name=visibility]:checked').value,download:document.querySelector('[name=download]:checked').value,publishTime:document.querySelector('[name=publishTime]:checked').value,scheduledAt:$('scheduled-at').value};}
+function showSettings(){locationUI.render();collectionUI.render();const value=settings[mode];for(const name of ['visibility','download','publishTime'])for(const field of document.querySelectorAll(`[name=${name}]`))field.checked=field.value===value[name];$('scheduled-at').value=value.scheduledAt||'';$('schedule-field').hidden=value.publishTime!=='scheduled';$('schedule-zone').textContent=Intl.DateTimeFormat().resolvedOptions().timeZone;}
+function settingsError(){const value=settings[mode],collectionIssue=collectionUI.error();if(collectionIssue)return collectionIssue;if(value.coverAssetID&&!value.coverCrop)return '请点击“编辑封面”确认裁剪后继续。';if(value.publishTime!=='scheduled')return '';const time=new Date(value.scheduledAt).getTime(),delta=time-Date.now();return !Number.isFinite(time)||delta<2*3600000||delta>14*86400000?'请选择 2 小时后至 14 天内的发布时间。':'';}
 function contentFor(kind){return {assetIDs:selected.filter(a=>a.kind===kind).map(a=>a.id),...texts[kind],settings:settings[kind]};}
 function captureText(){captureSettings();texts[mode]={title:$('title').value,description:$('description').value};}
 function showText(){ showSettings();$('title').value=texts[mode].title;$('description').value=texts[mode].description; }
@@ -150,7 +191,7 @@ function updateLink(){
  const items=current(),allowed=!error&&!loading&&items.length>0&&items.length<=(mode==='video'?1:35)&&items.every(a=>!a.error);
  $('continue').setAttribute('aria-disabled',String(!allowed));$('continue').tabIndex=allowed?0:-1;
  if(!allowed){$('continue').removeAttribute('href');return;}
- const job={version:1,draftKey:store.data.bindingID+':'+mode,kind:mode,id:crypto.randomUUID(),assets:items.map(a=>({id:a.id,name:a.name})),title:$('title').value,description:$('description').value,settings:{...settings[mode],scheduledAt:settings[mode].publishTime==='scheduled'&&!error?new Date(settings[mode].scheduledAt).toISOString():''}};
+ const job={version:1,draftKey:store.data.bindingID+':'+mode,kind:mode,id:crypto.randomUUID(),assets:items.map(a=>({id:a.id,name:a.name})),title:$('title').value,description:$('description').value,settings:{...settings[mode],coverIndex:mode==='image'&&settings[mode].coverAssetID?items.findIndex(a=>a.id===settings[mode].coverAssetID):undefined,location:settings[mode].location?.id?settings[mode].location:null,scheduledAt:settings[mode].publishTime==='scheduled'&&!error?new Date(settings[mode].scheduledAt).toISOString():''}};
  $('continue').href=new URL('handoff.html',location.href).href+'#'+encodeURIComponent(JSON.stringify(job));
 }
 // 缩略图不支持时回退到原图；不改变素材格式或写回图库。
@@ -225,6 +266,7 @@ function move(delta,first=false){
  const from=selected.indexOf(asset),to=selected.indexOf(items[target]);selected.splice(from,1);selected.splice(to,0,asset);render();
 }
 function render(){
+ renderCover();
  const items=current(),asset=focused();focusedID=asset?.id??null;
  $('image-mode').setAttribute('aria-selected',String(mode==='image'));$('video-mode').setAttribute('aria-selected',String(mode==='video'));
  $('media-heading').firstChild.textContent=mode==='image'?'图片内容 ':'视频内容 ';
@@ -237,8 +279,9 @@ function render(){
   if(!item.error&&mode==='image')thumb.append(imageFor(item));
   else {const icon=document.createElement('span');icon.className=item.error?'broken':'video-symbol';icon.textContent=item.error||'▷';thumb.append(icon);}
   thumb.onclick=()=>{focusedID=item.id;for(const element of $('grid').children){const active=element===card;element.classList.toggle('active',active);element.querySelector('.thumb').setAttribute('aria-pressed',String(active));}renderPreview();};
+  thumb.oncontextmenu=event=>showCoverMenu(event,item);
   thumb.ondblclick=()=>{if(mode==='image'&&!item.error)openLightbox(item.id);};thumb.title='单击预览，双击放大';card.append(thumb);
-  if(mode==='image'&&index===0){const badge=document.createElement('span');badge.className='first-tag';badge.textContent='首图';card.append(badge);}
+  if(mode==='image'&&(index===0||item.id===settings.image.coverAssetID)){const badge=document.createElement('span');badge.className='first-tag';badge.textContent=index===0?(item.id===settings.image.coverAssetID?'首图 · 封面':'首图'):'封面';card.append(badge);}
   const remove=document.createElement('button');remove.className='remove';remove.textContent='×';remove.title='移除';remove.setAttribute('aria-label',`移除 ${item.name}`);remove.disabled=loading;remove.onclick=()=>{selected=selected.filter(a=>a.id!==item.id);render();};card.append(remove);
   const name=document.createElement('div');name.className='file-name';name.textContent=item.name;name.title=item.name;card.append(name);
   card.draggable=!loading&&mode==='image';

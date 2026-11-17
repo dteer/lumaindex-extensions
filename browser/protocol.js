@@ -1,23 +1,35 @@
 export const HANDOFF_PATH='/api/v1/plugins/com.lumaindex.douyin/files/handoff.html';
+// MAX_FILE 限制单张上传图片为 50 MiB，图文批次不设累计字节上限。
 export const MAX_FILE=50*1024*1024;
-export const MAX_TOTAL=80*1024*1024;
+// MAX_VIDEO_FILE 只限制单个视频为 80 MiB，不用于图文批次大小判断。
+export const MAX_VIDEO_FILE=80*1024*1024;
 
 // 只允许本机安装的这一插件交接页发起，不接受网页提供任意下载 URL。
 export function validate(message,senderURL) {
   const source=new URL(senderURL);
   if(source.protocol!=='http:'||!['127.0.0.1','localhost'].includes(source.hostname)||source.pathname!==HANDOFF_PATH||source.username||source.password)throw Error('交接来源不匹配，请从 App 打开插件。');
   const {op,job}=message||{};
-  if(!['upload','fill','continue'].includes(op)||job?.version!==1||typeof job.id!=='string'||! /^[a-zA-Z0-9-]{1,80}$/.test(job.id))throw Error('交接任务无效。');
+  if(op!=='continue'||job?.version!==1||typeof job.id!=='string'||! /^[a-zA-Z0-9-]{1,80}$/.test(job.id))throw Error('交接任务无效。');
   if(typeof job.title!=='string'||job.title.length>20||/[\r\n]/.test(job.title)||typeof job.description!=='string'||job.description.length>1000)throw Error('标题或描述格式无效。');
   if(job.settings){
     const s=job.settings;
+    if(s.location!==undefined&&s.location!==null&&(!/^[0-9]{6}$/.test(s.location.cityCode)||typeof s.location.cityName!=='string'||s.location.cityName.length>100||!/^\d{1,30}$/.test(s.location.id)||typeof s.location.name!=='string'||!s.location.name||s.location.name.length>200))throw Error('位置无效，请重新选择城市和地点。');
+    if(s.collection!==undefined&&s.collection!==null){
+      const c=s.collection;
+      if(typeof c!=='object'||Array.isArray(c)||typeof c.id!=='string'||!/^\d{1,30}$/.test(c.id)||typeof c.title!=='string'||!c.title.trim()||c.title.length>200||typeof c.account!=='string'||!/^\d{1,30}$/.test(c.account))throw Error('合集无效，请重新读取并选择当前抖音账号的合集。');
+      if(s.visibility!=='public')throw Error('加入合集的作品需要公开可见，请调整可见范围或清除合集。');
+    }
     if(!['public','friends','private'].includes(s.visibility)||!['allow','deny'].includes(s.download)||!['now','scheduled'].includes(s.publishTime))throw Error('发布设置无效。');
     if(s.publishTime==='scheduled'){const delta=Date.parse(s.scheduledAt)-Date.now();if(!Number.isFinite(delta)||delta<2*3600000||delta>14*86400000)throw Error('请选择 2 小时后至 14 天内的发布时间。');}
   }
-  if(job.draftKey!==undefined&&(typeof job.draftKey!=='string'||job.draftKey.length>500))throw Error('草稿标识无效。');
+  if(job.draftKey!==undefined&&(typeof job.draftKey!=='string'||!job.draftKey||job.draftKey.length>500))throw Error('草稿标识无效。');
   const kind=job.kind??'image';
   if(!['image','video'].includes(kind))throw Error('发布类型无效。');
   if(!Array.isArray(job.assets)||!job.assets.length||job.assets.length>(kind==='video'?1:35))throw Error('请选择 1–35 张图片或单个视频。');
+  if(job.settings?.coverIndex!==undefined&&(kind!=='image'||!Number.isInteger(job.settings.coverIndex)||job.settings.coverIndex<0||job.settings.coverIndex>=job.assets.length))throw Error('封面选择无效，请重新选择。');
+  const crop=job.settings?.coverCrop;
+  if(job.settings?.coverIndex!==undefined&&!crop)throw Error('请先在抖音发布助手中确认封面裁剪。');
+  if(crop&&(job.settings.coverIndex===undefined||!['x','y','width','height'].every(k=>typeof crop[k]==='number'&&Number.isFinite(crop[k]))||crop.x<0||crop.y<0||crop.width<=0||crop.height<=0||crop.x+crop.width>1.000001||crop.y+crop.height>1.000001))throw Error('封面裁剪区域无效，请重新裁剪。');
   const ids=new Set();
   for(const asset of job.assets) {
     if(typeof asset.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(asset.id))throw Error('素材身份无效或重复。');
@@ -41,11 +53,13 @@ export function imageType(bytes) {
 // 流式限额读取，原图过大时立即取消，不等完整文件进入内存。
 export async function readBounded(response,limit) {
   if(!response.ok||!response.body)throw Error(`原图读取失败（HTTP ${response.status}），请检查 App 和来源文件。`);
-  if(Number(response.headers.get('content-length'))>limit){await response.body.cancel();throw Error('素材超过本次传输大小限制。');}
+  // 超限使用稳定代码交由调用方补充文件名和场景上限，不依赖匹配提示文案。
+  const tooLarge=()=>Object.assign(Error('素材超过单个文件大小限制。'),{code:'MEDIA_FILE_TOO_LARGE'});
+  if(Number(response.headers.get('content-length'))>limit){try{await response.body.cancel();}catch{}throw tooLarge();}
   const reader=response.body.getReader(),parts=[];let size=0;
   try {
-    while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>limit)throw Error('素材超过本次传输大小限制。');parts.push(value);}
-  }catch(error){await reader.cancel();throw error;}finally{reader.releaseLock();}
+    while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>limit)throw tooLarge();parts.push(value);}
+  }catch(error){try{await reader.cancel();}catch{}throw error;}finally{reader.releaseLock();}
   const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}return bytes;
 }
 

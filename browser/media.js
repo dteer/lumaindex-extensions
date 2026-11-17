@@ -1,15 +1,15 @@
-import {readBounded,imageType,videoType,MAX_FILE,MAX_TOTAL} from './protocol.js';
+import {readBounded,imageType,videoType,MAX_FILE,MAX_VIDEO_FILE} from './protocol.js';
 
 // resolveAssets 读取图库确认的静态组件和浏览图，按图库素材身份去重，保持首次出现顺序；不重复读取文件计算哈希。
 export async function resolveAssets(job,origin){
  const assets=[],ids=new Set();let duplicates=0;
  const resolved=await mapLimited(job.assets,4,async source=>{
   let asset=source;
-  if(job.kind!=='video'){
+  {
    const metadata=await fetch(`${origin}/api/v1/assets/${encodeURIComponent(source.id)}`,{credentials:'omit',redirect:'error',signal:AbortSignal.timeout(15000)});
    const payload=await metadata.json();
    if(!metadata.ok||payload.code!==0)throw Error('读取素材信息失败，请检查图库。');
-   asset={id:payload.data.livePhoto?.imageAssetId||source.id,name:payload.data.name||source.name,sizeBytes:payload.data.sizeBytes,revision:JSON.stringify([payload.data.sizeBytes,payload.data.modifiedAt,payload.data.sha256||null])};
+   asset={id:(job.kind!=='video'&&payload.data.livePhoto?.imageAssetId)||source.id,name:payload.data.name||source.name,sizeBytes:payload.data.sizeBytes,revision:JSON.stringify([payload.data.sizeBytes,payload.data.modifiedAt,payload.data.sha256||null])};
    if(asset.id!==source.id){
     const response=await fetch(`${origin}/api/v1/assets/${encodeURIComponent(asset.id)}`,{credentials:'omit',redirect:'error',signal:AbortSignal.timeout(15000)});
     const detail=await response.json();if(!response.ok||detail.code!==0)throw Error('实况照片的静态图片不可用。');asset.name=detail.data.name;asset.sizeBytes=detail.data.sizeBytes;asset.revision=JSON.stringify([detail.data.sizeBytes,detail.data.modifiedAt,detail.data.sha256||null]);
@@ -27,26 +27,36 @@ export async function resolveAssets(job,origin){
  return {assets,duplicates};
 }
 
-// prepareFiles 只读取增量计划中需要上传的文件；已有资源不会再编码传输。
-export async function prepareFiles(job,origin,resolved=null,binary=false){
- const resolution=resolved?{assets:resolved,duplicates:0}:await resolveAssets(job,origin);
- let total=0;
- const files=await mapLimited(resolution.assets,2,async asset=>{
-  const video=job.kind==='video',useOriginal=video||/\.(jpe?g|png|webp)$/i.test(asset.name);
+// prepareFile 只读取一个已解析素材，调用方在上传并保存检查点后释放它，再读取下一项。
+// 图片仅受单张 50 MiB 限制；视频独立限制为 80 MiB，不累计图文批次字节数。
+export async function prepareFile(job,origin,asset){
+ // displayName 仅保留文件名并清除控制字符，错误提示不暴露来源目录或底层请求地址。
+ const displayName=(typeof asset?.name==='string'?asset.name.split(/[\\/]/).at(-1):'')
+  .replace(/[\x00-\x1f\x7f]/g,'').slice(0,160)||'未命名素材';
+ const video=job?.kind==='video';
+ let phase='reading';
+ try{
+  const useOriginal=video||/\.(jpe?g|png|webp)$/i.test(asset.name);
   const variant=useOriginal?'original':'preview?size=2048';
   const response=await fetch(`${origin}/api/v1/assets/${encodeURIComponent(asset.id)}/${variant}`,{credentials:'omit',redirect:'error',signal:AbortSignal.timeout(60000)});
-  const bytes=await readBounded(response,video?MAX_TOTAL:MAX_FILE);
+  const bytes=await readBounded(response,video?MAX_VIDEO_FILE:MAX_FILE);
+  phase='format';
   const type=video?videoType(bytes):imageType(bytes);
-  total+=bytes.length;
-  if(total>MAX_TOTAL)throw Error('去重后的素材仍超过本次传输大小限制。');
-  const extensions={'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/bmp':'bmp','image/tif':'tif'};
-  const name=video?asset.name:asset.name.replace(/\.[^.]+$/,'')+'.'+extensions[type];
-  if(binary)return {assetID:asset.id,revision:asset.revision||null,name,type,size:bytes.length,file:new File([bytes],name,{type})};
-  let encoded='';
-  for(let offset=0;offset<bytes.length;offset+=32768)encoded+=String.fromCharCode(...bytes.subarray(offset,offset+32768));
-  return {assetID:asset.id,revision:asset.revision||null,name,type,base64:btoa(encoded)};
- });
- return {files,duplicates:resolution.duplicates};
+  if(!video&&!['image/jpeg','image/png','image/webp'].includes(type))throw Error();
+  const extensions={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'};
+  const name=video?displayName:displayName.replace(/\.[^.]+$/,'')+'.'+extensions[type];
+  phase='preparing';
+  return {assetID:asset.id,revision:asset.revision||null,name,type,size:bytes.length,file:new File([bytes],name,{type})};
+ }catch(error){
+  if(error?.code==='MEDIA_FILE_TOO_LARGE')throw Object.assign(Error(video
+   ?`“${displayName}”超过单个视频 80 MiB 的限制，请压缩视频后重新带入。`
+   :`“${displayName}”超过单张图片 50 MiB 的限制，请缩小图片后重新带入。`),{code:'MEDIA_FILE_TOO_LARGE'});
+  if(phase==='format')throw Object.assign(Error(video
+   ?`“${displayName}”的视频格式不可用，请转换为 MP4、MOV 或 WebM 后重新带入。`
+   :`“${displayName}”的图片格式不可用，请转换为 JPEG、PNG 或 WebP 后重新带入。`),{code:'MEDIA_UNSUPPORTED_FORMAT'});
+  if(['TimeoutError','AbortError'].includes(error?.name))throw Object.assign(Error(`读取“${displayName}”超时，请确认图库运行且素材来源在线后重新带入。`),{code:'MEDIA_READ_TIMEOUT'});
+  throw Object.assign(Error(`无法读取“${displayName}”，请在图库检查素材是否可打开，并确认来源在线后重新带入。`),{code:'MEDIA_READ_FAILED'});
+ }
 }
 
 // mapLimited 限制本机读取并发，按输入顺序返回，避免多图串行等待和无界内存占用。

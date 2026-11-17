@@ -1,4 +1,4 @@
-// 纯前端草稿模型：只保存素材身份和文字，不保存原图、视频、账号或上传凭据。
+// 本机草稿只保存素材身份、文字与设置；合集归属保存公开账号 ID，不保存原图、视频或登录上传凭据。
 export const modes=['image','video'];
 export const signature=draft=>JSON.stringify([draft.assetIDs,draft.title,draft.description,draft.settings]);
 export function normalize(raw){

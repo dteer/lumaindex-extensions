@@ -2,15 +2,21 @@
   "manifest_version": 3,
   "name": "有序图库抖音联动",
   "version": "1.0.0",
-  "description": "接收 App 插件中的图片或视频，交给抖音网页上传，由用户手动发布。",
+  "description": "由扩展独立上传图片、封面与视频并写入原生草稿，带入后可用抖音原生界面继续编辑。",
   "permissions": [
     "scripting",
-    "storage"
+    "storage",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
-    "https://creator.douyin.com/*"
+    "https://creator.douyin.com/*",
+    "https://imagex.bytedanceapi.com/*",
+    "https://vod.bytedanceapi.com/*",
+    "https://*.bytedancevod.com/*",
+    "https://*.snssdk.com/*",
+    "https://*.douyin.com/*"
   ],
   "background": {
     "service_worker": "worker.js",
@@ -23,30 +29,49 @@
         "http://localhost/*"
       ],
       "js": [
-        "handoff-content.js"
+        "handoff-content.js",
+        "relay-content.js"
       ],
       "run_at": "document_idle"
     },
     {
       "matches": [
-        "https://creator.douyin.com/*"
+        "https://creator.douyin.com/creator-micro/content/post/*"
       ],
       "js": [
-        "browser-observer.js"
+        "staging-content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_end"
     }
   ],
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "有序图库 · 连接状态",
+    "default_popup": "settings.html"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
+  },
   "web_accessible_resources": [
     {
       "resources": [
-        "binary-frame.html",
-        "binary-frame.js",
-        "binary-store.js"
+        "staging.html",
+        "staging.css",
+        "staging.js"
       ],
       "matches": [
         "https://creator.douyin.com/*"
       ]
     }
-  ]
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "staging_csp",
+        "enabled": true,
+        "path": "staging-rules.json"
+      }
+    ]
+  }
 }

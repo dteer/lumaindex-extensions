@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>有序图库 · 扩展配置</title><link rel="stylesheet" href="settings.css"></head>
+<body><main><header><h1>有序图库抖音联动</h1><p>扩展配置</p></header>
+<section><h2>App 后台连接</h2><label><input id="enabled" type="checkbox"> 启用 App 连接</label><div id="connections" aria-live="polite">正在读取连接状态…</div><p class="hint">连接由 Chrome 扩展后台管理，关闭此页不会断开。</p><p class="hint">开启后，App 首次搜索地点或读取合集时自动连接；关闭后立即断开并停止重连。</p><button id="refresh">刷新状态</button><p id="error" role="alert"></p></section>
+<section><h2>地点与合集查询</h2><p>在 App 中先选择城市，再搜索具体地址。扩展使用已登录的抖音发布页查询地点。选择作品合集时，可读取当前账号已有的普通合集；加入合集的作品需要公开可见。</p><p class="hint">查询时请保持抖音发布页打开。关闭 App 插件页面会结束对应连接。</p><a href="https://creator.douyin.com/" target="_blank" rel="noreferrer">打开抖音创作者中心 ↗</a></section>
+</main><script type="module" src="settings.js"></script></body></html>
