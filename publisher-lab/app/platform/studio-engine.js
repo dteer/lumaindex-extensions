@@ -12,14 +12,15 @@ import {validateStudioDraft, buildPublicationPayload} from './publication-payloa
 import {throwIfCancelled, combineSignals, cancellableWait} from './cancellation.js';
 
 const QUERY_OPERATIONS = ['topics.search', 'users.search', 'music.search', 'locations.search', 'collections.list', 'activities.list'];
-const OPERATIONS = ['studio.session', 'declarations.list', 'music.categories', 'activities.detail', 'activities.resolve', ...QUERY_OPERATIONS, 'cover.upload', 'publication.prepare', 'publication.publish', 'publication.status'];
+const OPERATIONS = ['studio.session', 'declarations.list', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve', ...QUERY_OPERATIONS, 'cover.upload', 'publication.prepare', 'publication.publish', 'publication.status'];
 const PLATFORM_ID = /^\d{1,30}$/;
 const LOCAL_ID = /^[a-zA-Z0-9_-]{1,100}$/;
-// 读取只短暂复用同一宿主档案的已核验身份；准备和发布永远不使用这些缓存。
-const READ_IDENTITY_TTL = 60 * 1000;
 const MUSIC_CATEGORY_TTL = 5 * 60 * 1000;
 const QUERY_PAGE_TTL = 15 * 1000;
 const QUERY_PAGE_LIMIT = 64;
+const MUSIC_RECORD_KEY = 'luma-studio-selected-music-v1';
+const MUSIC_RECORD_LIMIT = 128;
+const MUSIC_CANDIDATE_LIMIT = 200;
 // CHOICE_LOOKUP_PAGES 限制草稿恢复时的逐页核验，找不到精确身份时保留原选择并提示重新选择。
 const CHOICE_LOOKUP_PAGES = 5;
 
@@ -33,7 +34,7 @@ export function capabilities() {
       download: [{value: 'allow', label: '允许保存'}, {value: 'deny', label: '不允许保存'}],
     },
     declarations: [],
-    byKind: {video: {disabledOperations: ['music.search', 'music.categories', 'locations.search', 'collections.list']}},
+    byKind: {video: {disabledOperations: ['music.search', 'music.categories', 'music.resolve', 'music.select', 'locations.search', 'collections.list']}},
   };
 }
 
@@ -49,7 +50,7 @@ function checkedOrigin(value) {
     const url = new URL(value);
     if (url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && url.origin === value) return value;
   } catch {}
-  throw Error('当前 App 来源无效，请重新连接实验插件。');
+  throw Error('当前 App 来源无效，请重新连接发布工作台。');
 }
 
 // createStudioEngine 注入宿主会话与上传边界便于离线验证；运行时只调用固定业务函数。
@@ -60,7 +61,9 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   const media = {resolveAssets, prepareFile, importImages, importVideo, uploadImage, uploadVideo, cropCoverFile, ...upload};
   const accountTasks = new Set();
   const queryPages = new Map(); // 短期页面仅在内存保留，完整查询参数和账号档案共同隔离。
-  let generation = 0, readIdentity = null; // 账号失效后，旧异步结果不能重新填充身份或候选缓存。
+  const musicSources = new Map();
+  let musicWrites = Promise.resolve();
+  let generation = 0; // 明确换号后，旧异步结果不能重新填充候选缓存。
 
   // requireContext 同时约束取消和账号生命周期，阻止旧请求回写新账号的缓存。
   function requireContext(context) {
@@ -71,16 +74,16 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   // fresh 按创建时间而非访问时间失效；系统时钟回拨也不能延长缓存生命。
   function fresh(createdAt, ttl) { const age = now() - createdAt; return Number.isFinite(age) && age >= 0 && age < ttl; }
 
-  // nativeBinding 仅读宿主公开会话元数据，不读取 Cookie；旧宿主没有档案能力时继续实时核验。
+  // nativeBinding 只核对本机档案归属；离线不删除身份，也不阻断已有回执和候选的本地读取。
   async function nativeBinding(context, {allowUnidentified = false} = {}) {
     if (!sessionStatus) return null;
     const status = await sessionStatus();
     requireContext(context);
-    if (!status) return null;
+    if (!status) throw Object.assign(Error('当前账号档案无法读取，请重新打开工作台。'), {code: 'SESSION_CHANGED'});
+    if (context.profileId && status.activeProfileId !== context.profileId) throw Object.assign(Error('当前抖音账号已变化，请重新检查会话。'), {code: 'ACCOUNT_CHANGED'});
     if (allowUnidentified && !status.accountId) return null;
-    if (!status.hasCookies || !Number.isFinite(Date.parse(status.expiresAt)) || Date.parse(status.expiresAt) <= now()) throw Object.assign(Error('当前抖音会话已过期，请重新登录。'), {code: 'SESSION_EXPIRED'});
     if (typeof status.activeProfileId !== 'string' || !status.activeProfileId || !PLATFORM_ID.test(status.accountId || '')) throw Object.assign(Error('当前账号尚未核验，请先检查会话。'), {code: 'SESSION_CHANGED'});
-    return {key: JSON.stringify([context.origin, status.activeProfileId, status.accountId, status.expiresAt]), accountId: status.accountId};
+    return {key: JSON.stringify([context.origin, status.activeProfileId, status.accountId]), accountId: status.accountId, name: typeof status.name === 'string' ? status.name : ''};
   }
 
   // sameAccount 拒绝把另一真实账号的查询或准备结果当作界面当前账号的结果。
@@ -88,12 +91,13 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     if (expected && account.id !== expected) throw Object.assign(Error('抖音账号已变化，请重新连接并准备当前账号的作品。'), {code: 'ACCOUNT_CHANGED'});
   }
 
-  // creator 由宿主发送固定 HTTPS 请求，业务参数不依赖宿主标签页或页面运行时。
+  // creator 由宿主发送固定 HTTPS 请求，业务参数由插件编排，浏览器执行与登录相同环境的 fetch。
   async function creator(operation, params = {}, context) {
     requireContext(context);
     const result = await createCreatorAPI(context?.send || send)(operation, params);
-    requireContext(context);
-    if (result?.ok !== true) throw Object.assign(Error(publicError({message: result?.error})), {definiteFailure: result?.definiteFailure === true});
+    // 已提交的明确回执必须保存；迟到的页面状态变化不能把成功改写成 unknown。
+    if (operation !== 'publication.publish') requireContext(context);
+    if (result?.ok !== true) throw Object.assign(Error(publicError({message: result?.error})), {definiteFailure: result?.definiteFailure === true, ...(result?.code ? {code: result.code} : {})});
     return result;
   }
 
@@ -104,32 +108,24 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     return account;
   }
 
-  // verifyAccount 在上传、准备和提交的关键边界实时核对平台身份，不使用读取缓存。
-  async function verifyAccount(expected, context) {
-    const account = await currentAccount(context);
-    if (account.id !== expected) throw Object.assign(Error('抖音账号已变化，请重新连接并准备当前账号的作品。'), {code: 'ACCOUNT_CHANGED'});
-    return account;
-  }
-
-  // session 只对资源读取复用近期真实核验；每次仍由宿主确认当前档案、账号和到期边界。
-  async function session(context) {
-    const binding = context.readOnly ? await nativeBinding(context) : null;
+  // session 对普通操作只使用明确的本机账号；登录核验和准备入口才读取平台真实身份。
+  async function session(context, {verifyRemote = false, allowUnidentified = false} = {}) {
+    const binding = await nativeBinding(context, {allowUnidentified});
     if (binding) sameAccount({id: binding.accountId}, context.expectedAccountId);
-    if (binding && readIdentity?.key === binding.key && fresh(readIdentity.verifiedAt, READ_IDENTITY_TTL)) {
-      sameAccount(readIdentity.account, context.expectedAccountId);
-      return {...context, binding, account: structuredClone(readIdentity.account)};
-    }
+    if (binding && !verifyRemote) return {...context, binding, account: {id: binding.accountId, name: binding.name}};
+    // 未提供宿主会话元数据的调用仍需取得一次真实身份，不以传入账号字段冒充已登录。
     const account = await currentAccount(context);
     sameAccount(account, binding?.accountId);
     sameAccount(account, context.expectedAccountId);
-    if (binding) readIdentity = {key: binding.key, account, verifiedAt: now()};
     return {...context, binding, account};
   }
 
-  // verifyReadSession 在展示和保存候选前重读本机档案；没有宿主档案契约时回退到实时平台核验。
+  // verifyReadSession 只复查本机档案；子请求失败由对应平台接口直接反馈，不额外查询账号。
   async function verifyReadSession(context) {
-    if (!context.binding) return verifyAccount(context.account.id, context);
+    requireContext(context);
+    if (!context.binding) return;
     const current = await nativeBinding(context);
+    sameAccount({id: current?.accountId}, context.account.id);
     if (current?.key !== context.binding.key) throw Object.assign(Error('抖音账号已变化，本次查询未采用，请重新检查会话。'), {code: 'SESSION_CHANGED'});
   }
 
@@ -187,7 +183,6 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   // fetchCandidates 读取真实列表；推荐、关键词和链接始终使用平台返回的身份。
   async function fetchCandidates(operation, params, context, origin) {
     const {account} = context;
-    if (!context.readOnly) await verifyAccount(account.id, context);
     let data;
     if (operation === 'topics.search' && !params.query) {
       const saved = params.draftId ? await readCache(cacheKey('uploads', origin, account.id, params.draftId)) : null;
@@ -199,12 +194,12 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       const page = params.cursor === '0' ? 1 : Number(params.cursor);
       const request = validateLocationQuery({cityCode: params.cityCode, cityName: params.cityName, keyword: params.query, page});
       const response = await searchLocations(request, context.send);
-      if (!response.ok) throw Error(response.error || '地点查询未完成。');
+      if (!response.ok) throw Object.assign(Error(response.error || '地点查询未完成。'), response.code ? {code: response.code} : {});
       const result = response.data;
       data = {items: result.items.map(item => ({...item, description: item.address || '', cityCode: params.cityCode, cityName: params.cityName})), nextCursor: Number.isInteger(result.nextPage) && result.nextPage > page ? String(result.nextPage) : null};
     } else if (operation === 'collections.list') {
       const response = await listCollections(validateCollectionQuery({kind: params.kind, cursor: params.cursor}), context.send);
-      if (!response.ok) throw Error(response.error || '合集查询未完成。');
+      if (!response.ok) throw Object.assign(Error(response.error || '合集查询未完成。'), response.code ? {code: response.code} : {});
       const result = response.data;
       data = {items: result.items.filter(item => !params.query || item.title.includes(params.query)).map(item => ({id: item.id, name: item.title,
         order: item.order, itemCount: item.itemCount, thumbnailURL: item.thumbnailURL, description: `共 ${item.itemCount} 个作品`})), nextCursor: result.nextCursor};
@@ -230,7 +225,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
         data = (await creator('music.list', {category_id: category.id, type: category.type, cursor: params.cursor, creation_id: browsing.creationId}, context)).data;
       }
     } else data = (await creator(operation, {query: params.query, cursor: params.cursor}, context)).data;
-    if (!context.readOnly) await verifyAccount(account.id, context);
+    if (!context.readOnly) await verifyReadSession(context);
     if (!data || !Array.isArray(data.items)) throw Error('平台候选格式已变化，请稍后重新查询。');
     const ids = new Set();
     data.items = data.items.filter(item => {
@@ -264,6 +259,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       queryPages.delete(pageKey); queryPages.set(pageKey, page);
       while (queryPages.size > QUERY_PAGE_LIMIT) queryPages.delete(queryPages.keys().next().value);
     }
+    if (operation === 'music.search') rememberMusicSources(data.items, context, page.queriedAt);
     for (const item of data.items) {
       // 目录只有显示线索，不能把经过舍入的列表话题或普通浏览记录当成发布身份。
       if (operation === 'activities.list') continue;
@@ -283,8 +279,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     const item = list.items.find(value => value.id === id);
     if (!item || item.disabled) throw Error(item?.description || '官方活动已变化或不可用，请重新读取后选择。');
     const detail = (await creator('activities.detail', {id}, context)).data;
-    if (context.readOnly) await verifyReadSession(context);
-    else await verifyAccount(context.account.id, context);
+    await verifyReadSession(context);
     const matches = detail.topicChoices.filter(value => value.name === item.topicName);
     if (detail.name !== item.name || matches.length !== 1) throw Error('官方活动话题身份无法确认，请重新读取活动详情后选择。');
     return {...item, topic: structuredClone(matches[0])};
@@ -298,26 +293,157 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   // resolveActivity 上传前后重查目录及精确详情；草稿恢复无需依赖已经销毁的页面内存。
   async function resolveActivity(selected, context, origin, checks) {
     const current = await currentActivity(selected.id, context, origin, checks);
-    if (current.name !== selected.name) throw Error('官方活动已变化或不可用，请重新读取后选择。');
-    if (current.topic.id !== selected.topic.id || current.topic.name !== selected.topic.name) throw Error('官方活动话题已变化或不可用，请重新读取后选择。');
+    if (current.topic.id !== selected.topic.id) throw Error('官方活动话题已变化或不可用，请重新读取后选择。');
     return current;
   }
 
-  // resolveChoice 把草稿身份只当查询线索；内存丢失或音乐到期时重新查平台，严格匹配 ID 和名称。
+  // 音乐身份与真实音源分开：info 只有身份，时长和地址只能来自同账号实际查询记录。
+  function musicIdentity(params, extra = []) {
+    if (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).some(key => !['id', ...extra].includes(key)) ||
+        typeof params.id !== 'string' || !PLATFORM_ID.test(params.id)) throw Error('请选择有效的音乐身份。');
+    if (Object.hasOwn(params, 'refreshSource') && typeof params.refreshSource !== 'boolean') throw Error('音乐刷新选项无效。');
+    return params.id;
+  }
+  function musicScope(context) {
+    if (typeof context.profileId !== 'string' || !context.profileId || context.profileId.length > 256) throw Error('请先选择并核对账号，再恢复配乐。');
+    return {profileId: context.profileId, accountId: context.account.id};
+  }
+  function musicSource(item) {
+    let previewURL = null;
+    try { const url = new URL(item?.previewURL); if (url.protocol === 'https:' && !url.username && !url.password && url.href.length <= 4096) previewURL = url.href; } catch {}
+    const duration = Number.isFinite(item?.duration) && item.duration > 0 ? item.duration : undefined;
+    return {previewURL, ...(duration ? {duration} : {})};
+  }
+  function musicRecordKey(value) { return JSON.stringify([value.profileId, value.accountId, value.id]); }
+  function rememberMusicSources(items, context, queriedAt = now()) {
+    if (!context.profileId) return;
+    const scope = musicScope(context);
+    for (const item of items) {
+      const source = musicSource(item);
+      if (!PLATFORM_ID.test(item?.id || '') || !source.previewURL && !source.duration) continue;
+      const entry = {...scope, id: item.id, ...source, queriedAt}, key = musicRecordKey(entry);
+      musicSources.delete(key); musicSources.set(key, entry);
+    }
+    while (musicSources.size > MUSIC_CANDIDATE_LIMIT) musicSources.delete(musicSources.keys().next().value);
+  }
+  async function selectedMusicRecords() {
+    const stored = (await storage.get(MUSIC_RECORD_KEY))?.[MUSIC_RECORD_KEY];
+    if (stored === undefined) return [];
+    if (stored?.version !== 1 || !Array.isArray(stored.items) || stored.items.length > MUSIC_RECORD_LIMIT) throw Error('本机配乐记录无法读取，已保留草稿。');
+    return stored.items.filter(item => item && typeof item.profileId === 'string' && item.profileId.length <= 256 && PLATFORM_ID.test(item.accountId || '') && PLATFORM_ID.test(item.id || ''))
+      .map(item => ({profileId: item.profileId, accountId: item.accountId, id: item.id, ...musicSource(item)}));
+  }
+  async function saveMusicRecord(record, context, keepIds) {
+    const operation = musicWrites.catch(() => {}).then(async () => {
+      requireContext(context);
+      let items = await selectedMusicRecords();
+      requireContext(context);
+      // 选曲在队列与读盘之后复查本机档案，旧账号的候选不能越过等待写入当前选择。
+      if (keepIds) {
+        if (!fresh(record.queriedAt, 30 * 60 * 1000)) throw Error('这首音乐的查询记录已失效，请重新打开音乐列表后选择。');
+        await verifyReadSession(context);
+      }
+      if (keepIds) items = items.filter(item => item.profileId !== record.profileId || item.accountId !== record.accountId || keepIds.has(item.id));
+      const key = musicRecordKey(record), index = items.findIndex(item => musicRecordKey(item) === key);
+      const value = {profileId: record.profileId, accountId: record.accountId, id: record.id, ...musicSource(record)};
+      if (index >= 0) items[index] = value;
+      else {
+        if (items.length >= MUSIC_RECORD_LIMIT) throw Error('本机已保存的配乐记录已满，请先移除不再使用的草稿配乐。');
+        items.push(value);
+      }
+      await storage.set({[MUSIC_RECORD_KEY]: {version: 1, items}});
+      requireContext(context);
+      return value;
+    });
+    musicWrites = operation;
+    return operation;
+  }
+  // 选曲记录仅从近期真实候选产生；翻页不会淘汰已选记录，清理只依据调用方现存草稿引用。
+  async function selectMusic(params, context) {
+    const id = musicIdentity(params, ['keepIds']);
+    if (!Array.isArray(params.keepIds) || params.keepIds.length > 41 || params.keepIds.some(value => typeof value !== 'string' || !PLATFORM_ID.test(value)) || !params.keepIds.includes(id)) throw Error('配乐草稿引用无法确认，请重试。');
+    const scope = musicScope(context), record = musicSources.get(musicRecordKey({...scope, id}));
+    if (!record || !fresh(record.queriedAt, 30 * 60 * 1000)) throw Error('这首音乐的查询记录已失效，请重新打开音乐列表后选择。');
+    const saved = await saveMusicRecord(record, context, new Set(params.keepIds));
+    return {id, ...musicSource(saved)};
+  }
+  // 旧草稿只在推荐和收藏各读最多两页，按 ID 精确补齐；不按名称或 ID 关键词搜索。
+  async function findMusicSource(id, context, origin, requirement) {
+    const categories = (await musicCategories({kind: 'image'}, context, origin)).items;
+    for (const type of ['recommend', 'fav']) {
+      const category = categories.find(item => item.type === type);
+      if (!category) continue;
+      const visited = new Set(); let cursor = '0';
+      for (let page = 0; page < 2; page++) {
+        if (visited.has(cursor)) break;
+        visited.add(cursor);
+        const result = await fetchCandidates('music.search', {query: '', cursor, kind: 'image', categoryId: category.id, type}, context, origin);
+        await verifyReadSession(context);
+        rememberMusicSources(result.items, context);
+        const item = result.items.find(value => value.id === id), source = musicSource(item);
+        if (item && (requirement === 'duration' ? source.duration : source.previewURL)) return {...musicScope(context), id, ...source};
+        if (!result.nextCursor) break;
+        cursor = result.nextCursor;
+      }
+    }
+    return null;
+  }
+  async function resolveMusic(params, context, origin, requirement = 'preview') {
+    const id = musicIdentity(params, ['refreshSource']), scope = musicScope(context);
+    const item = (await creator('music.resolve', {id}, context)).data;
+    if (!item || item.id !== id || typeof item.name !== 'string' || !item.name || item.name.length > 200) throw Object.assign(Error('所选音乐无法确认，已保留原配乐，请稍后重试。'), {code: 'MUSIC_IDENTITY_MISMATCH'});
+    await verifyReadSession(context);
+    await musicWrites.catch(() => {});
+    let record = (await selectedMusicRecords()).find(value => musicRecordKey(value) === musicRecordKey({...scope, id}));
+    requireContext(context);
+    if (params.refreshSource) {
+      musicSources.delete(musicRecordKey({...scope, id}));
+      // 用户已确认该地址播放失败；同一账号的短期查询页也不能把旧候选重新写回。
+      for (const [key, page] of queryPages) {
+        const binding = JSON.parse(key);
+        if (binding[0] === origin && binding[1] === context.account.id && binding[3] === 'music.search' && page.data?.items?.some(value => value.id === id)) queryPages.delete(key);
+      }
+      if (record) record = await saveMusicRecord({...record, previewURL: null}, context);
+    }
+    const hasSource = value => requirement === 'duration' ? !!value?.duration : !!value?.previewURL;
+    if (!params.refreshSource && !hasSource(record)) {
+      const candidate = musicSources.get(musicRecordKey({...scope, id}));
+      if (candidate && fresh(candidate.queriedAt, 30 * 60 * 1000) && hasSource(candidate)) record = await saveMusicRecord(candidate, context);
+    }
+    if (params.refreshSource || !hasSource(record)) {
+      const found = await findMusicSource(id, context, origin, requirement);
+      if (found) record = await saveMusicRecord({...record, ...found}, context);
+    }
+    await verifyReadSession(context);
+    return {...item, ...musicSource(record)};
+  }
+
+  // 上传前后按 ID 核身份，时长只取同账号实际选曲或列表记录，绝不信任草稿附加字段。
+  async function resolveMusicChoice(selected, context, origin) {
+    if (!selected) return null;
+    try { return await resolveMusic({id: selected.id}, context, origin, 'duration'); }
+    catch (error) {
+      requireContext(context);
+      if (['ACCOUNT_CHANGED', 'SESSION_CHANGED', 'SESSION_EXPIRED'].includes(error.code) || error.name === 'AbortError') throw error;
+      throw Object.assign(Error(`无法核验音乐「${selected.name}」：${publicError(error)}`), {code: error.code || 'CHOICE_LOOKUP_FAILED'});
+    }
+  }
+
+  // resolveChoice 按精确 ID 采用平台当前字段；同一对象改名不要求用户重新选择。
   async function resolveChoice(operation, selected, context, origin, kind) {
     if (!selected) return null;
     const record = await readCache(cacheKey('candidate', origin, context.account.id, `${operation}:${selected.id}`));
-    const known = record?.operation === operation && record.item?.id === selected.id && record.item.name === selected.name;
-    // 推荐榜会重排；近期已核验音乐可复用，到期后按名称重新搜索，不要求用户手动重复选择。
-    if (operation === 'music.search' && known && fresh(record.queriedAt, 30 * 60 * 1000)) return structuredClone(record.item);
-    const label = {'topics.search': '话题', 'users.search': '好友', 'music.search': '音乐', 'locations.search': '地点', 'collections.list': '合集'}[operation];
-    let lookup = known && operation !== 'music.search' ? {...record.params} : {query: selected.name.slice(0, 100), cursor: '0', kind};
+    const known = record?.operation === operation && record.item?.id === selected.id;
+    const label = {'topics.search': '话题', 'users.search': '好友', 'locations.search': '地点', 'collections.list': '合集'}[operation];
+    let lookup = known ? {...record.params} : {query: selected.name.slice(0, 100), cursor: '0', kind};
+    // 合集目录可以按 ID 遍历，不用旧名称过滤掉已经改名的同一合集。
+    if (operation === 'collections.list') lookup.query = '';
     if (operation === 'topics.search' && !lookup.query) lookup.query = selected.name.slice(0, 100);
     if (operation === 'locations.search' && !known) {
       if (!selected.cityCode || !selected.cityName) throw Object.assign(Error(`地点「${selected.name}」缺少城市信息，请重新选择城市和地点。`), {code: 'CHOICE_LOCATION_CITY_REQUIRED'});
       Object.assign(lookup, {cityCode: selected.cityCode, cityName: selected.cityName});
     }
-    const recovery = {...lookup, query: selected.name.slice(0, 100), cursor: '0'};
+    const recovery = {...lookup, query: operation === 'collections.list' ? '' : selected.name.slice(0, 100), cursor: '0'};
     let restarted = JSON.stringify(queryParams(operation, lookup)) === JSON.stringify(queryParams(operation, recovery));
     const visited = new Set();
     for (let page = 0; page < CHOICE_LOOKUP_PAGES; page++) {
@@ -330,9 +456,9 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       catch (error) {
         requireContext(context);
         if (['ACCOUNT_CHANGED', 'SESSION_CHANGED', 'SESSION_EXPIRED'].includes(error.code) || error.name === 'AbortError') throw error;
-        throw Object.assign(Error(`无法核验${label}「${selected.name}」：${publicError(error)}`), {code: 'CHOICE_LOOKUP_FAILED'});
+        throw Object.assign(Error(`无法核验${label}「${selected.name}」：${publicError(error)}`), {code: error.code || 'CHOICE_LOOKUP_FAILED'});
       }
-      const match = result.items.find(item => item.id === selected.id && item.name === selected.name);
+      const match = result.items.find(item => item.id === selected.id);
       if (match) {
         await rememberCandidate(operation, params, match, context, origin);
         return match;
@@ -347,22 +473,27 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     throw Object.assign(Error(`${label}「${selected.name}」已变化或当前账号无法使用，请重新搜索并选择。`), {code: 'CHOICE_UNAVAILABLE'});
   }
 
-  // resolveChoices 不信任 App 提交的平台附加字段，只使用刚从固定查询取得的业务值。
+  // resolveChoices 用固定查询核对真实身份；已校验的名称话题保留官网的0标记，不查询或猜测身份。
   async function resolveChoices(draft, context, origin) {
     const topics = [], mentions = [], activities = [];
     const activityChecks = new Map();
     // 同一次边界共用目录，每个已选活动单独读详情；上传后的边界使用全新检查缓存。
     for (const item of draft.activities) activities.push(await resolveActivity(item, context, origin, activityChecks));
     for (const item of draft.topics) {
+      if (item.id === '0') { topics.push({id: '0', name: item.name}); continue; }
       const activity = activities.find(value => value.topic.id === item.id);
       topics.push(activity ? activity.topic : await resolveChoice('topics.search', item, context, origin, draft.kind));
     }
     for (const item of draft.mentions) mentions.push(await resolveChoice('users.search', item, context, origin, draft.kind));
-    const music = await resolveChoice('music.search', draft.music, context, origin, draft.kind);
-    if (music && (!Number.isFinite(music.duration) || music.duration <= 0)) throw Error('此音乐未返回可确认时长，请重新选择推荐音乐。');
+    const music = await resolveMusicChoice(draft.music, context, origin);
+    // 只更新本次准备的内部快照，保存的草稿名称保持不变。
+    if (music) draft.music = {id: music.id, name: music.name};
+    if (music && (!Number.isFinite(music.duration) || music.duration <= 0)) throw Error('这首音乐缺少已核验的音频资料，已保留原配乐，请重新选择该音乐后再准备。');
     const location = await resolveChoice('locations.search', draft.location, context, origin, draft.kind);
     if (location?.requiresNativeSelection) throw Error('此地点需要平台额外确认，请清除地点后继续。');
     const collection = await resolveChoice('collections.list', draft.collection, context, origin, draft.kind);
+    if (location) draft.location = {...draft.location, name: location.name};
+    if (collection) draft.collection = {...draft.collection, name: collection.name};
     draft.topics = topics.map(({id, name}) => ({id, name})); draft.mentions = mentions.map(({id, name}) => ({id, name}));
     draft.activities = activities.map(({id, name, topic}) => ({id, name, topic: {id: topic.id, name: topic.name}}));
     return {music, location, collection};
@@ -371,10 +502,8 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   // declarationOptions 读取当前作品与账号的真实声明规则，不把本机固定枚举伪装为平台能力。
   async function declarationOptions(params, context) {
     if (!['image', 'video'].includes(params?.kind) || !LOCAL_ID.test(params?.draftId || '')) throw Error('请选择有效作品后读取自主声明。');
-    if (!context.readOnly) await verifyAccount(context.account.id, context);
     const result = (await creator('declarations.list', {kind: params.kind, draftId: params.draftId}, context)).data;
-    if (context.readOnly) await verifyReadSession(context);
-    else await verifyAccount(context.account.id, context);
+    await verifyReadSession(context);
     return result;
   }
 
@@ -393,9 +522,8 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
 
   // uploadAuthorization 仅在本次任务内返回凭据，持久层永远只接收上传完成元数据。
   async function uploadAuthorization(context) {
-    await verifyAccount(context.account.id, context);
     const result = await creator('auth', {}, context);
-    await verifyAccount(context.account.id, context);
+    await verifyReadSession(context);
     return result.auth;
   }
 
@@ -405,7 +533,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     const record = await readCache(cacheKey('cover', origin, context.account.id, id));
     if (!record?.uploadFile?.uri || !record.assetId) throw Error('封面记录不可用，请重新上传图库图片。');
     const current = await media.resolveAssets({kind: 'image', assets: [{id: record.assetId, name: record.name}]}, origin, {signal: context.signal});
-    if (current.assets?.length !== 1 || current.assets[0].revision !== record.revision) throw Error('封面源文件已变化，请重新选择并上传。');
+    if (current.assets?.length !== 1 || current.assets[0].id !== record.assetId || current.assets[0].kind !== 'image' || current.assets[0].revision !== record.revision) throw Error('封面源文件已变化，请重新选择并上传。');
     return record.uploadFile;
   }
 
@@ -413,21 +541,19 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   async function uploadCover(params, context, origin) {
     if (!LOCAL_ID.test(params?.assetId || '') || params.file !== undefined) throw Error('请从图库选择一张图片作为封面。');
     return exclusive(context.account.id, async () => {
-      let asset;
-      if (libraryAsset) asset = await libraryAsset(origin, params.assetId);
-      else {
-        const response = await fetch(`${origin}/api/v1/assets/${encodeURIComponent(params.assetId)}`, {credentials: 'omit', redirect: 'error', signal: combineSignals(context.signal, AbortSignal.timeout(15000))});
-        const body = await response.json();
-        if (!response.ok || body.code !== 0) throw Error('无法读取图库封面，请检查素材来源。');
-        asset = body.data;
-      }
-      if (asset?.kind !== 'image') throw Error('封面必须使用图库中的图片素材。');
-      const job = {kind: 'image', assets: [{id: params.assetId, name: asset.name || '封面.jpg'}], settings: {}};
-      const resolved = (await media.resolveAssets(job, origin, {signal: context.signal})).assets?.[0];
-      if (!resolved?.revision) throw Error('无法确认封面文件版本。');
+      const job = {kind: 'image', assets: [{id: params.assetId, name: '封面.jpg', kind: 'image'}], settings: {}};
+      const resolution = await media.resolveAssets(job, origin, {signal: context.signal});
+      const resolved = resolution.assets?.[0];
+      if (resolution.assets?.length !== 1 || resolved?.kind !== 'image') throw Error('封面必须使用图库中的图片素材。');
+      if (!resolved.revision) throw Error('无法确认封面文件版本。');
       const file = await media.prepareFile(job, origin, resolved, {signal: context.signal});
+      if (!file?.file || file.assetID !== resolved.id || file.revision !== resolved.revision) throw Error('封面读取不完整或版本已变化，请重新准备。');
+      const current = await media.resolveAssets(job, origin, {signal: context.signal});
+      if (current.assets?.length !== 1 || current.assets[0].id !== resolved.id || current.assets[0].kind !== 'image' || current.assets[0].revision !== resolved.revision) throw Error('封面源文件已变化，请重新准备。');
       const uploaded = await media.uploadImage(file.file, await uploadAuthorization(context), {fetch: context.send, signal: context.signal});
-      await verifyAccount(context.account.id, context);
+      const afterUpload = await media.resolveAssets(job, origin, {signal: context.signal});
+      if (afterUpload.assets?.length !== 1 || afterUpload.assets[0].id !== resolved.id || afterUpload.assets[0].kind !== 'image' || afterUpload.assets[0].revision !== resolved.revision) throw Error('封面源文件已变化，请重新准备。');
+      await verifyReadSession(context);
       if (uploaded?.uploadFile?.uriStatus !== 2000) throw Error('封面上传未得到确认，请重试。');
       const id = uuid();
       await writeCache(cacheKey('cover', origin, context.account.id, id), {assetId: resolved.id, name: resolved.name, revision: resolved.revision, uploadFile: uploaded.uploadFile, createdAt: now()});
@@ -445,10 +571,16 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       let selected = await resolveChoices(draft, context, origin);
       let declaration = await resolveDeclaration(draft, context);
       const job = {id: draft.id, kind: draft.kind, assets: draft.assets, settings: {}};
-      if (draft.cover?.type === 'asset' && draft.cover.crop) Object.assign(job.settings, {coverIndex: draft.assets.findIndex(item => item.id === draft.cover.assetId), coverCrop: draft.cover.crop});
+      if (draft.cover?.type === 'asset') {
+        const selectedCover = draft.assets.find(item => item.id === draft.cover.assetId);
+        job.settings.coverAsset = selectedCover ?? {id: draft.cover.assetId, name: '封面.jpg', kind: 'image'};
+        if (draft.cover.crop) job.settings.coverCrop = draft.cover.crop;
+      }
       const key = cacheKey('uploads', origin, context.account.id, draft.id), previous = (await readCache(key))?.records || [];
       const checkpoint = records => writeCache(key, {records, recommendationFrames: [], updatedAt: now()});
-      const onProgress = value => progress?.({...value, assetId: value.assetID, message: {resolving: '正在核对图库素材', reading: '正在读取素材', uploading: '正在上传素材', processing: '正在等待视频转码', cover: '正在准备封面', staging: '正在核对发布内容'}[value.phase] || '正在准备作品'});
+      const onProgress = value => progress?.({...value, assetId: value.assetId || value.assetID,
+        message: value.message || {resolving: '正在核对图库素材', reading: '正在读取素材', cropping: '正在裁剪封面', uploading: '正在上传素材',
+          uploaded: '已上传', reused: '复用已上传素材', ready: '视频已就绪', failed: '素材处理失败', processing: '正在等待视频转码', cover: '正在准备封面', staging: '正在核对发布内容'}[value.phase] || '正在准备作品'});
       const dependencies = {...media, checkpoint, onProgress, signal: context.signal,
         resolveAssets: (job, origin) => { throwIfCancelled(context.signal); return media.resolveAssets(job, origin, {signal: context.signal}); },
         prepareFile: (job, origin, asset) => { throwIfCancelled(context.signal); return media.prepareFile(job, origin, asset, {signal: context.signal}); },
@@ -463,8 +595,8 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       } else {
         prepared = await media.importVideo({job, account: context.account.id, origin, previous}, {...dependencies,
           buildVideoDraft: ({video}) => ({video}),
-          enableVideo: async vid => { await verifyAccount(context.account.id, context); await creator('video-enable', {vid}, context); await verifyAccount(context.account.id, context); },
-          getVideoStatus: async vid => { await verifyAccount(context.account.id, context); const result = (await creator('video-status', {vid}, context)).data; await verifyAccount(context.account.id, context); return result; },
+          enableVideo: async vid => { await creator('video-enable', {vid}, context); await verifyReadSession(context); },
+          getVideoStatus: async vid => { const result = (await creator('video-status', {vid}, context)).data; await verifyReadSession(context); return result; },
         });
       }
       if (draft.kind === 'image') {
@@ -474,15 +606,24 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       // 长时间上传后重查选项，尤其是合集集数，不能使用上传开始时的旧值。
       selected = await resolveChoices(draft, context, origin);
       declaration = await resolveDeclaration(draft, context);
+      // 平台选项复核可能耗时；保存发布快照前再次确认独立封面的真实图库版本。
+      if (prepared.coverSource) {
+        const current = await dependencies.resolveAssets({kind: 'image', assets: [prepared.coverSource.source]}, origin);
+        const asset = current.assets?.[0];
+        if (current.assets?.length !== 1 || asset?.id !== prepared.coverSource.assetID || asset.kind !== 'image' || asset.revision !== prepared.coverSource.revision) {
+          throw Error('封面源文件已变化，请重新准备。');
+        }
+      }
       let cover;
       if (draft.cover?.type === 'upload') cover = await imageCoverRecord(draft.cover.id, context, origin);
       else if (draft.kind === 'image') {
         const index = draft.cover?.type === 'asset' ? draft.assets.findIndex(item => item.id === draft.cover.assetId) : 0;
-        cover = prepared.draft.cover || prepared.draft.images?.[index];
+        cover = prepared.draft.cover || (index >= 0 ? prepared.draft.images?.[index] : undefined);
+        if (!cover) throw Error('所选图库封面尚未完整准备，请重新准备作品。');
       }
       validateStudioDraft(draft, {...capabilities(), now: now()});
       const payload = buildPublicationPayload({draft, ...prepared.draft, ...selected, cover, declaration, creationId: uuid()});
-      await verifyAccount(context.account.id, context);
+      await verifyReadSession(context);
       return store.prepare({account: context.account, draft, payload, origin, summary: {title: draft.title, assetCount: draft.assets.length, kind: draft.kind, visibility: draft.settings.visibility, scheduledAt: draft.settings.scheduledAt}});
     });
   }
@@ -491,14 +632,12 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   async function publish(params, context, origin) {
     if (params?.expectedAccountId !== context.account.id) throw Error('确认账号与当前抖音账号不同，请重新准备。');
     return exclusive(context.account.id, async () => {
-      await verifyAccount(context.account.id, context);
       const attempt = await store.beginSubmit({preparationId: params.preparationId, requestId: params.requestId, origin, expectedAccountId: context.account.id, confirmed: params.confirmed});
       if (attempt.duplicate) return attempt.result;
       let result;
       try {
         const response = await creator('publication.publish', {payload: attempt.payload, expectedAccountId: context.account.id}, context);
         result = response.data;
-        await verifyAccount(context.account.id, context);
       } catch (error) {
         result = {status: error.definiteFailure === true ? 'failed' : 'unknown', message: error.definiteFailure === true ? publicError(error) : '发布结果尚未确认，请查询状态并核对抖音作品列表，勿重复提交。'};
       }
@@ -515,30 +654,36 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     if (identity !== context.account.id) throw Error('这条发布记录属于其他抖音账号，请切换回原账号后查询。');
     if (!result.publicationId || result.status === 'failed') return result;
     const remote = (await creator('publication.status', {publicationId: result.publicationId}, context)).data;
-    await verifyAccount(context.account.id, context);
+    await verifyReadSession(context);
     // 当前只核实“平台存在记录”，不将未知审核状态解释成已发布。
     return store.finish(result.preparationId, {publicationId: result.publicationId, status: 'processing', message: remote.message || '已取得平台作品记录，实际发布状态请在创作者中心确认。'});
   }
 
   // dispatch 是 App 唯一业务入口，未列入能力清单的操作一律拒绝。
-  async function dispatch(operation, params = {}, {origin, progress, signal, expectedAccountId} = {}) {
+  async function dispatch(operation, params = {}, {origin, progress, signal, expectedAccountId, profileId} = {}) {
     checkedOrigin(origin);
-    if (!OPERATIONS.includes(operation)) throw Error('此功能尚未接入实验工作台。');
+    if (!OPERATIONS.includes(operation)) throw Error('此功能尚未接入发布工作台。');
+    if (operation === 'music.resolve') musicIdentity(params, ['refreshSource']);
+    if (operation === 'music.select') musicIdentity(params, ['keepIds']);
     throwIfCancelled(signal);
     // 发布开始后必须取得并持久化真实或未知回执；UI 不提供撤销提交的假承诺。
     const operationSignal = operation === 'publication.publish' ? undefined : signal;
-    const scope = {origin, generation, signal: operationSignal, expectedAccountId, readOnly: QUERY_OPERATIONS.includes(operation) || ['declarations.list', 'music.categories', 'activities.detail', 'activities.resolve'].includes(operation)};
+    const scope = {origin, profileId, generation, signal: operationSignal, expectedAccountId, readOnly: QUERY_OPERATIONS.includes(operation) || ['declarations.list', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve'].includes(operation)};
     const scopedSend = async (url, options = {}) => {
       requireContext(scope);
-      const response = await send(url, {...options, signal: combineSignals(operationSignal, options.signal)});
-      requireContext(scope);
+      const response = await send(url, {...options, ...(profileId ? {profileId} : {}), signal: combineSignals(operationSignal, options.signal)});
+      if (operation !== 'publication.publish') requireContext(scope);
       return response;
     };
     try {
-      const context = await session({...scope, send: scopedSend});
+      const context = await session({...scope, send: scopedSend}, {
+        verifyRemote: ['studio.session', 'publication.prepare', 'cover.upload'].includes(operation), allowUnidentified: operation === 'studio.session',
+      });
       let value;
       if (operation === 'studio.session') value = {connected: true, account: context.account, capabilities: capabilities()};
       else if (operation === 'declarations.list') value = await declarationOptions(params, context);
+      else if (operation === 'music.resolve') value = await resolveMusic(params, context, origin);
+      else if (operation === 'music.select') value = await selectMusic(params, context);
       else if (operation === 'music.categories') { value = await musicCategories(params, context, origin); await verifyReadSession(context); }
       else if (operation === 'activities.detail') { value = (await creator('activities.detail', {id: params.id}, context)).data; await verifyReadSession(context); }
       else if (operation === 'activities.resolve') value = await selectActivity(params, context, origin);
@@ -548,27 +693,21 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       else if (operation === 'publication.publish') return publish(params, context, origin);
       else if (operation === 'publication.status') value = await publicationStatus(params, context, origin);
       if (operation === 'studio.session') {
-        // 显式检查已经取得真实身份，保存同一已识别档案的短期读取资格，避免紧接着再查一遍账号。
+        // 登录核验只确认本次真实身份；普通操作使用本机档案，不建立定时重验账号的缓存。
         const binding = await nativeBinding(context, {allowUnidentified: true});
         if (binding && context.account.id !== binding.accountId) throw Object.assign(Error('实际抖音账号与所选账号不一致，请重新登录。'), {code: 'SESSION_IDENTITY_MISMATCH'});
-        if (binding) readIdentity = {key: binding.key, account: context.account, verifiedAt: now()};
-      } else if (!context.readOnly) await verifyAccount(context.account.id, context);
+      }
       requireContext(context);
       return value;
     } catch (error) {
       throwIfCancelled(operationSignal);
-      if (scope.generation === generation) {
-        readIdentity = null;
-        queryPages.clear();
-        // 查询失败后重试重新读取分类，避免平台分类变更导致持续复用已失效的分类入口。
-        for (const key of cache.keys()) if (key.startsWith('studio-music-categories:')) cache.delete(key);
-        if (['SESSION_CHANGED', 'SESSION_EXPIRED', 'ACCOUNT_CHANGED'].includes(error.code)) invalidate();
-      }
+      // 断网或平台拒绝只反馈本次错误，保留先前资料；明确换号才清除旧账号的临时候选。
+      if (scope.generation === generation && ['SESSION_CHANGED', 'ACCOUNT_CHANGED'].includes(error.code)) invalidate();
       throw error;
     }
   }
 
   // invalidate 清理临时查询证据；持久化的发布回执和上传检查点仍按账号隔离保留。
-  function invalidate() { generation++; readIdentity = null; cache.clear(); queryPages.clear(); }
-  return {dispatch, invalidate};
+  function invalidate() { generation++; cache.clear(); queryPages.clear(); musicSources.clear(); }
+  return {dispatch, invalidate, capabilities};
 }

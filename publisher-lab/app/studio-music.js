@@ -110,12 +110,13 @@ export function mountMusicCategories({container, onSelect, onRetry}) {
 }
 
 /** 接管音乐结果与底部播放器；查询、分页与作品保存继续由宿主编排。 */
-export function mountMusicDrawer({results, footer, audio, safeURL, onSelect}) {
+export function mountMusicDrawer({results, footer, audio, safeURL, onSelect, refreshPreview}) {
   const rows = new Map();
   const listeners = new AbortController();
-  let current = null, selectedId = '', generation = 0, disposed = false, buffering = false;
+  let current = null, selectedId = '', selectingId = '', generation = 0, disposed = false, buffering = false;
   let lastVolume = audio.volume > 0 ? audio.volume : 1;
   let failure = '';
+  let needsRefresh = false, refreshJob = null;
   footer.classList.add('studio-music-playback');
   footer.hidden = true;
   audio.hidden = true;
@@ -212,25 +213,59 @@ export function mountMusicDrawer({results, footer, audio, safeURL, onSelect}) {
     coverButton.setAttribute('aria-label', isPlaying ? '暂停试听' : '播放试听');
     const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
     const position = Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
-    progress.disabled = duration === null || !audio.seekable.length || audio.seekable.end(audio.seekable.length - 1) <= 0 || !!failure;
+    coverButton.disabled = !!refreshJob;
+    progress.disabled = !!refreshJob || duration === null || !audio.seekable.length || audio.seekable.end(audio.seekable.length - 1) <= 0 || !!failure;
     progress.value = String(duration ? Math.round(Math.min(1, position / duration) * 1000) : 0);
     progress.style.setProperty('--music-progress', progress.value / 10 + '%');
     progress.setAttribute('aria-valuetext', `${clock(position)} / ${clock(duration)}`);
     time.textContent = `${clock(position)} / ${clock(duration)}`;
-    status.textContent = failure;
-    status.hidden = !failure;
+    status.textContent = refreshJob ? '正在重新获取试听音频…' : failure;
+    status.hidden = !refreshJob && !failure;
     updateVolume();
   }
 
-  /** 开始或切换真实音轨；迟到的旧 play() 拒绝不能覆盖新曲目的状态。 */
-  async function play(item) {
+  /** 区分浏览器实际媒体错误；不把尚未加载的音轨显示为已播放。 */
+  function mediaFailure(error) {
+    if (audio.error?.code === 1 || error?.name === 'AbortError') return {code: 'PLAYBACK_INTERRUPTED', message: '音乐试听已中断，请点击重试。'};
+    if ([3, 4].includes(audio.error?.code) || error?.name === 'NotSupportedError') return {code: 'PLAYBACK_FORMAT_FAILED', message: '此音乐的试听音频暂时无法播放，请点击重试。'};
+    return {code: 'PLAYBACK_FAILED', message: '此音乐暂时无法试听，请点击重试。'};
+  }
+
+  /** 开始或切换真实音轨；失败仅在下一次明确点击时刷新，不自动循环请求。 */
+  async function play(item, {refreshOnFailure = true} = {}) {
     if (disposed) return;
-    const value = candidate(item);
+    let value = candidate(item);
     if (!value.url) return;
+    if (refreshJob?.id === value.id && refreshJob.url === value.url) return {ok: false, code: 'PLAYBACK_PENDING'};
+    refreshJob?.controller.abort(); refreshJob = null;
     const token = ++generation;
-    const same = current?.id === value.id && current?.url === value.url;
-    if (same && !audio.paused) { audio.pause(); buffering = false; updatePlayback(); return; }
+    let same = current?.id === value.id && current?.url === value.url;
+    if (same && needsRefresh && refreshOnFailure && typeof refreshPreview === 'function') {
+      const job = {id: value.id, url: value.url, controller: new AbortController()};
+      refreshJob = job; buffering = true; failure = '';
+      updatePlayback();
+      try {
+        const refreshed = candidate(await refreshPreview(value.source, {signal: job.controller.signal}));
+        if (disposed || token !== generation || refreshJob !== job || job.controller.signal.aborted) return {ok: false, code: 'PLAYBACK_CANCELLED'};
+        if (refreshed.id !== value.id) throw Error('未能确认这首音乐的试听音频，请稍后重试。');
+        if (!refreshed.url) throw Error('暂未取得这首音乐的试听音频，请稍后重试或选择其他音乐。');
+        value = refreshed;
+        // 即使平台仍返回同一地址，也只在本次用户重试中重新加载一次。
+        same = false;
+        rows.get(value.id)?.update(value);
+      } catch (error) {
+        if (disposed || token !== generation || refreshJob !== job || job.controller.signal.aborted) return {ok: false, code: 'PLAYBACK_CANCELLED'};
+        buffering = false;
+        failure = error?.name === 'AbortError' ? '音乐试听已中断，请点击重试。' : error?.message || '重新获取试听音频失败，请稍后重试。';
+        return {ok: false, code: 'PLAYBACK_SOURCE_FAILED'};
+      } finally {
+        if (refreshJob === job) { refreshJob = null; updatePlayback(); }
+      }
+    }
+    // WebKit 在媒体失败后仍可能 paused=false；错误重试与已结束重播不能被误当作暂停。
+    if (same && !audio.paused && !audio.error && !audio.ended) { audio.pause(); buffering = false; updatePlayback(); return; }
     failure = '';
+    needsRefresh = false;
     if (!same) {
       audio.pause();
       current = value;
@@ -251,9 +286,11 @@ export function mountMusicDrawer({results, footer, audio, safeURL, onSelect}) {
       if (token !== generation || disposed) return {ok: false, code: 'PLAYBACK_CANCELLED'};
       buffering = false;
       const needsGesture = error?.name === 'NotAllowedError';
-      failure = needsGesture ? '已取得试听音频，请再次点击播放。' : '此音乐暂时无法试听，请重试。';
+      const problem = mediaFailure(error);
+      needsRefresh = !needsGesture && (!!audio.error || error?.name !== 'AbortError');
+      failure = needsGesture ? '已取得试听音频，请再次点击播放。' : problem.message;
       updatePlayback();
-      return {ok: false, code: needsGesture ? 'PLAYBACK_GESTURE_REQUIRED' : 'PLAYBACK_FAILED'};
+      return {ok: false, code: needsGesture ? 'PLAYBACK_GESTURE_REQUIRED' : problem.code};
     }
   }
 
@@ -282,14 +319,17 @@ export function mountMusicDrawer({results, footer, audio, safeURL, onSelect}) {
     function sync() {
       const active = current?.id === item.id && current?.url === item.url;
       const running = active && playing();
+      const selecting = selectingId === item.id;
       row.classList.toggle('is-current', active);
       row.classList.toggle('is-playing', running);
       row.classList.toggle('is-selected', selectedId === item.id);
+      row.classList.toggle('is-selecting', selecting);
       listen.setAttribute('aria-label', `${running ? '暂停' : '试听'} ${item.name}`);
       listen.setAttribute('aria-pressed', String(running));
-      listen.disabled = !item.url;
-      use.textContent = selectedId === item.id ? '已使用' : '使用';
-      use.disabled = selectedId === item.id;
+      listen.disabled = !item.url || refreshJob?.id === item.id;
+      use.textContent = selecting ? '保存中…' : selectedId === item.id ? '已使用' : '使用';
+      use.setAttribute('aria-busy', String(selecting));
+      use.disabled = !!selectingId || selectedId === item.id;
     }
 
     /** 列表分页或选中状态变化时复用原行，避免夺走键盘焦点。 */
@@ -326,22 +366,24 @@ export function mountMusicDrawer({results, footer, audio, safeURL, onSelect}) {
   // 媒体事件是播放器唯一状态来源；切曲、暂停、拖动与网络错误均使用相同同步入口。
   for (const event of ['play', 'pause', 'timeupdate', 'loadedmetadata', 'durationchange', 'progress', 'canplay', 'ended', 'seeked', 'volumechange']) audio.addEventListener(event, updatePlayback, {signal: listeners.signal});
   audio.addEventListener('waiting', () => { buffering = true; updatePlayback(); }, {signal: listeners.signal});
-  audio.addEventListener('playing', () => { buffering = false; failure = ''; updatePlayback(); }, {signal: listeners.signal});
-  audio.addEventListener('error', () => { if (current && audio.error) { buffering = false; failure = '此音乐暂时无法试听，请重试。'; updatePlayback(); } }, {signal: listeners.signal});
+  audio.addEventListener('playing', () => { buffering = false; failure = ''; needsRefresh = false; updatePlayback(); }, {signal: listeners.signal});
+  audio.addEventListener('error', () => { if (current && audio.error && !refreshJob) { buffering = false; needsRefresh = true; failure = mediaFailure().message; updatePlayback(); } }, {signal: listeners.signal});
 
   /** 停止试听并释放音源；隐藏底栏且撤销未完成 play() 的错误回调。 */
   function stop() {
     generation++;
-    current = null; failure = ''; buffering = false;
+    refreshJob?.controller.abort(); refreshJob = null;
+    current = null; failure = ''; buffering = false; needsRefresh = false;
     audio.pause(); audio.removeAttribute('src'); audio.load();
     updatePlayback();
   }
 
   return {
-    /** 渲染查询候选并保留同一音轨进度；selectedId 只表示宿主已选配乐。 */
-    render({items = [], selectedId: nextSelectedId = ''} = {}) {
+    /** 渲染候选并保留试听进度；已选与正在保存分开同步，媒体事件不会解除保存状态。 */
+    render({items = [], selectedId: nextSelectedId = '', selectingId: nextSelectingId = ''} = {}) {
       if (disposed) return;
       selectedId = String(nextSelectedId || '');
+      selectingId = String(nextSelectingId || '');
       const keep = new Set();
       let position = 0;
       for (const source of items) {

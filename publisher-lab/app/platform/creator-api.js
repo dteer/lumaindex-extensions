@@ -1,15 +1,22 @@
+import {creatorJSONOptions} from './browser-request.js';
+
 // activityJSON 限制活动响应体积；精确身份必须来自详情字符串，不能把已舍入的列表数字转成身份。
 function activityJSON(source) {
   if (typeof source !== 'string' || source.length > 4 * 1024 * 1024 || new TextEncoder().encode(source).byteLength > 4 * 1024 * 1024) throw Error('活动响应过大，请稍后重新读取。');
   return JSON.parse(source);
 }
 
-// createCreatorAPI 通过宿主原生请求执行固定业务协议，登录会话始终留在宿主。
+// createCreatorAPI 通过同一登录网页环境执行固定业务协议，登录会话始终留在宿主。
 // 不读取 Cookie、不调用网站私有组件，也不生成或绕过平台安全签名。
 export function createCreatorAPI(send) {
 return async function creatorRequest(operation, params = {}) {
   const origin = 'https://creator.douyin.com';
-  const fetch = (value, options) => send(new URL(value, origin).href, options);
+  const fetch = async (value, options) => {
+    const response = await send(new URL(value, origin).href, creatorJSONOptions(options));
+    // 只根据明确的 HTTP 登录拒绝归类；未知平台业务码仍按原错误反馈，不推测账号失效。
+    if ([401, 403].includes(response.status)) throw Object.assign(Error('当前抖音登录不可用，请在账号菜单中重新登录后重试。'), {code: 'SESSION_EXPIRED', definiteFailure: true});
+    return response;
+  };
   const text = value => typeof value === 'string' ? value : '';
   const identifier = value => /^\d{1,30}$/.test(text(value));
   // 收藏可返回 16 位字符串游标；它是平台位置令牌而非递增页码，数值形式只接受不会失真的安全整数。
@@ -47,6 +54,9 @@ return async function creatorRequest(operation, params = {}) {
         if (text(params.query).length > 100 || !/^\d{1,12}$/.test(String(params.cursor ?? '0'))) throw Error('用户搜索参数无效。');
         path = text(params.query).trim() ? '/web/api/v2/discover/search/' : '/web/api/v2/user/recent/contact/';
         if (text(params.query).trim()) query = {keyword: params.query.trim(), cursor: params.cursor || '0', scene: 1, search_source: 'publish_web', count: 10}; break;
+      case 'music.resolve':
+        if (!identifier(params.id) || Object.keys(params).some(key => key !== 'id')) throw Error('请选择有效的音乐身份。');
+        path = '/web/api/media/music/info/'; query.id = params.id; break;
       case 'music.categories': path = '/web/api/media/music/category'; break;
       case 'music.list':
         if (!/^\d{1,30}$/.test(String(params.category_id)) || !['recommend', 'rank', 'fav', 'category'].includes(params.type) || musicCursor(params.cursor ?? '0') === null || !/^[a-zA-Z0-9-]{1,100}$/.test(params.creation_id || '')) throw Error('音乐分类参数无效。');
@@ -77,10 +87,11 @@ return async function creatorRequest(operation, params = {}) {
         {
           const check = await fetch('/web/api/media/user/info/?device_platform=web', {credentials: 'include', redirect: 'error', signal: AbortSignal.timeout(15000)});
           const account = await check.json();
-          if (!check.ok || account.status_code !== 0 || account.user?.uid !== params.expectedAccountId) return {ok: false, definiteFailure: true, error: '当前抖音账号已变化，发布未提交，请重新准备。'};
+          if (!check.ok || account.status_code !== 0) return {ok: false, definiteFailure: true, error: '平台未能确认当前登录，发布未提交，请检查账号后重试。'};
+          if (account.user?.uid !== params.expectedAccountId) return {ok: false, definiteFailure: true, code: 'ACCOUNT_CHANGED', error: '当前抖音账号已变化，发布未提交，请重新准备。'};
         }
         path = '/web/api/media/aweme/create_v2/'; query.read_aid = 2906; method = 'POST'; body = JSON.stringify(params.payload); break;
-      default: throw Error('此能力尚未接入实验工作台。');
+      default: throw Error('此能力尚未接入发布工作台。');
     }
     const url = new URL(path, origin);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
@@ -157,6 +168,11 @@ return async function creatorRequest(operation, params = {}) {
       return {ok: true, data: {items, required: [1, 2].includes(options.block_type), nextCursor: null}};
     }
     if (operation === 'users.search') return {ok: true, data: {items: (data.user_list || []).filter(x => identifier(x.uid) && text(x.nickname)).map(x => ({id: x.uid, name: x.nickname, description: text(x.unique_id) || text(x.short_id), thumbnailURL: mediaURL(x.avatar_thumb?.url_list?.[0])})), nextCursor: data.has_more && Number.isSafeInteger(Number(data.cursor)) ? String(Number(data.cursor) + 10) : null}};
+    // 官方详情按 id 返回基础身份，不返回音源或时长；这些字段不能猜测或由名称补齐。
+    if (operation === 'music.resolve') {
+      if (!identifier(data.music_id) || data.music_id !== params.id || !text(data.music_name).trim() || data.music_name.length > 200) throw Error('平台返回的音乐身份无法确认，已保留原配乐。');
+      return {ok: true, data: {id: data.music_id, name: data.music_name, description: text(data.music_author), thumbnailURL: mediaURL(data.cover_url), previewURL: null}};
+    }
     if (operation === 'music.categories') {
       if (!Array.isArray(data.categories) || data.categories.length > 100) throw Error('音乐分类格式或数量已变化，请重新读取。');
       const seen = new Set(), items = [];
@@ -192,7 +208,9 @@ return async function creatorRequest(operation, params = {}) {
     // 尚未验证状态枚举，只报告真实查询是否找到作品，不猜测“已发布”。
     if (operation === 'publication.status') return {ok: true, data: {publicationId: params.publicationId, status: 'processing', message: data.aweme ? '已查到作品记录；审核、可见性及定时状态请在创作者中心核对。' : '暂未查到完整作品记录，请稍后查询。'}};
   } catch (error) {
-    return {ok: false, error: operation === 'publication.publish' ? '发布结果待确认，请核对创作者中心，勿重复提交。' : /[\u3400-\u9fff]/.test(error?.message || '') ? error.message : '查询超时或页面已变化，请检查抖音页面后重试。'};
+    const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : undefined;
+    return {ok: false, ...(code ? {code} : {}), ...(error?.definiteFailure === true ? {definiteFailure: true} : {}),
+      error: operation === 'publication.publish' && error?.definiteFailure !== true ? '发布结果待确认，请核对创作者中心，勿重复提交。' : /[\u3400-\u9fff]/.test(error?.message || '') ? error.message : '查询超时或页面已变化，请检查抖音页面后重试。'};
   }
 }
 

@@ -25,8 +25,8 @@ window.controls=mountResourceControls({current:()=>draft,supports:()=>true,safeU
 }});controls.render();`);
 const cacheFixture = resourceFixture(`
 const emptyDraft=id=>({id,kind:'image',assets:[],topics:[],mentions:[],settings:{declarations:[]}});
-window.fixture={draft:emptyDraft('first-draft'),account:'A',calls:[],failNext:'',malformedNext:''};
-window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>true,safeURL:()=>'',identity:()=>fixture.account+':'+fixture.draft.id,cacheScope:()=>fixture.account+':'+fixture.draft.kind,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
+window.fixture={draft:emptyDraft('first-draft'),account:'A',calls:[],failNext:'',malformedNext:'',offline:false};
+window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>!fixture.offline,safeURL:()=>'',identity:()=>fixture.account+':'+fixture.draft.id,cacheScope:()=>fixture.account+':'+fixture.draft.kind,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
   fixture.calls.push({operation,account:fixture.account,...params});
   if(fixture.failNext===operation){fixture.failNext='';throw Error('合成网络故障，请重试。');}
   if(fixture.malformedNext===operation){fixture.malformedNext='';return {};}
@@ -36,10 +36,23 @@ window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>tr
 }});
 window.setContext=({account=fixture.account,id=fixture.draft.id,kind=fixture.draft.kind})=>{fixture.account=account;fixture.draft=emptyDraft(id);fixture.draft.kind=kind;controls.render();};
 controls.render();`);
+const topicFixture = resourceFixture(`
+window.fixture={draft:{id:'topic-draft',kind:'image',assets:[],description:'',topics:[],mentions:[],settings:{declarations:[]}},calls:[],online:true,mode:'empty'};
+window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>fixture.online,safeURL:()=>'',identity:()=> 'topics',blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
+  fixture.calls.push({operation,...params});
+  if(operation!=='topics.search')throw Error('Unexpected topic fixture operation: '+operation);
+  if(!params.query)return {items:[],nextCursor:null};
+  if(fixture.mode==='error')throw Error('合成在线查询失败，本地话题仍可添加。');
+  if(fixture.mode==='existing')return {items:[{id:0,name:params.query,viewCount:0},{id:'existing-id',name:params.query,viewCount:125000}],nextCursor:null};
+  if(fixture.mode==='names')return {items:[{id:0,name:'新话题甲',viewCount:0},{id:0,name:'新话题乙',viewCount:0}],nextCursor:null};
+  return {items:[],nextCursor:null};
+}});
+document.getElementById('description').addEventListener('input',event=>{fixture.draft.description=event.target.value;});
+controls.render();`);
 await mkdir(output, {recursive: true});
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
-  if (url.pathname === '/resource-race.html' || url.pathname === '/resource-cache.html') { response.setHeader('Content-Type', 'text/html'); response.end(url.pathname === '/resource-race.html' ? paginationFixture : cacheFixture); return; }
+  if (['/resource-race.html', '/resource-cache.html', '/resource-topics.html'].includes(url.pathname)) { response.setHeader('Content-Type', 'text/html'); response.end(url.pathname === '/resource-race.html' ? paginationFixture : url.pathname === '/resource-topics.html' ? topicFixture : cacheFixture); return; }
   if (/^\/api\/v1\/assets\/fixture-(one|two)\//.test(url.pathname)) {
     response.setHeader('Content-Type', 'image/svg+xml'); response.end(picture); return;
   }
@@ -69,11 +82,11 @@ try {
   wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(16000, 40);
   await page.route('https://media.example.test/**', route => route.fulfill({status: 200, contentType: route.request().url().endsWith('.wav') ? 'audio/wav' : 'image/svg+xml', body: route.request().url().endsWith('.wav') ? wav : picture}));
   await page.addInitScript(({origin}) => {
-    const profile = {id: 'profile-resources', accountId: '123', name: '摄影日志', hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString()};
+    const profile = {id: 'profile-resources', accountId: '123', name: '摄影日志', browserSessionAvailable: true, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString()};
     const runtime = {};
     window.__resourcesUI = {messages: [], requests: [], state: JSON.parse(sessionStorage.getItem('resources-ui-state') || '{}')};
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: window.__resourcesUI.state, libraryID: 'resources-ui-fixture'};
-    const status = () => ({hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
+    window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: window.__resourcesUI.state, libraryID: 'resources-ui-fixture'};
+    const status = () => ({browserSessionAvailable: true, hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
       window.__resourcesUI.messages.push(structuredClone(message));
       if (message.op === 'persist') {
@@ -90,7 +103,7 @@ try {
         return {ok: true, data: message.keys ? {[message.keys]: value} : runtime};
       }
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
-      if (message.op !== 'session.request') throw Error('Unexpected native resource operation: ' + message.op);
+      if (message.op !== 'browser.request') throw Error('Unexpected native resource operation: ' + message.op);
       const url = new URL(message.url);
       window.__resourcesUI.requests.push({url: message.url, headers: message.headers, credentials: message.credentials, method: message.method, queryAtRequest: document.querySelector('#search-query')?.value});
       let data;
@@ -387,9 +400,91 @@ try {
   await cache.locator('#collection-popover .resource-retry').click();
   await cache.locator('#collection-popover [role=option]').filter({hasText: '周末摄影 D 0'}).waitFor();
   assert.equal((await fixtureCalls('collections.list')).filter(call => call.account === 'D').length, 2, 'invalid responses cannot poison the cache across retry');
+  // 离线保留已选字段；本地清除有独立入口，不为了清空草稿重新检查账号或读取列表。
+  const callsBeforeClear = await cache.evaluate(() => {
+    fixture.offline = true;
+    fixture.draft.collection = {id: 'saved-collection', name: '已保存合集'};
+    fixture.draft.location = {id: 'saved-location', name: '已保存位置', cityCode: '330100', cityName: '杭州市'};
+    controls.close(); controls.render();
+    return fixture.calls.length;
+  });
+  assert.equal(await cache.locator('#collection-name').textContent(), '已保存合集');
+  assert.equal(await cache.locator('#location-name').textContent(), '已保存位置');
+  assert.equal(await cache.locator('#search-collection').isDisabled(), true);
+  assert.equal(await cache.locator('#search-location').isDisabled(), true);
+  await cache.getByRole('button', {name: '清除合集', exact: true}).click();
+  assert.equal(await cache.evaluate(() => fixture.draft.collection), null);
+  assert.equal(await cache.evaluate(() => fixture.draft.location.id), 'saved-location');
+  await cache.getByRole('button', {name: '清除位置', exact: true}).click();
+  assert.equal(await cache.evaluate(() => fixture.draft.location), null);
+  assert.equal(await cache.evaluate(() => fixture.calls.length), callsBeforeClear);
+  assert.equal(await cache.getByRole('button', {name: '清除合集', exact: true}).count(), 0);
+  assert.equal(await cache.getByRole('button', {name: '清除位置', exact: true}).count(), 0);
   await cache.close();
+
+  // 名称话题只在明确选择后绑定；离线与查询失败仍能编辑，多个0不会互相覆盖。
+  const topics = await browser.newPage();
+  topics.on('pageerror', error => errors.push(error.message));
+  await topics.goto(origin + '/resource-topics.html');
+  await topics.waitForFunction(() => window.ready);
+  const topicDescriptionInput = topics.locator('#description');
+  const topicOption = name => topics.getByRole('option', {name: '# ' + name, exact: true});
+  const readTopics = () => topics.evaluate(() => structuredClone(fixture.draft.topics));
+  await topicDescriptionInput.fill('日期 #20190701');
+  await topicOption('20190701').waitFor();
+  assert.deepEqual(await readTopics(), [], 'typing a new hashtag leaves it ordinary unbound text');
+  assert.equal(await topicOption('20190701').locator('.topic-heat').textContent(), '', 'new topics have no fabricated popularity');
+  await topicOption('20190701').click();
+  assert.deepEqual(await readTopics(), [{id: '0', name: '20190701'}]);
+  await topicDescriptionInput.fill('日期 #20190701 #20190702');
+  await topicOption('20190702').click();
+  assert.deepEqual(await readTopics(), [{id: '0', name: '20190701'}, {id: '0', name: '20190702'}]);
+  await topicDescriptionInput.fill('日期 #20190701 #20190702 #20190701');
+  await topicOption('20190701').click();
+  assert.equal((await topicDescriptionInput.inputValue()).match(/#20190701/g).length, 1, 'selecting the same name does not duplicate its text');
+  assert.deepEqual((await readTopics()).map(item => item.name).sort(), ['20190701', '20190702']);
+
+  await topics.evaluate(() => { fixture.mode = 'existing'; });
+  await topicDescriptionInput.fill('日期 #20190701 #20190702 #已有话题');
+  await topics.waitForFunction(() => document.querySelector('#association-results .topic-heat')?.textContent === '12.5万');
+  assert.equal(await topics.locator('#association-results [role=option]').count(), 1, 'an exact existing ID replaces the zero-ID candidate');
+  await topics.locator('#association-results [role=option]').click();
+  assert.equal((await readTopics()).find(item => item.name === '已有话题').id, 'existing-id');
+
+  const offlineCalls = await topics.evaluate(() => { fixture.online = false; return fixture.calls.length; });
+  await topicDescriptionInput.fill('日期 #20190701 #20190702 #已有话题 #离线新词');
+  await topicOption('离线新词').click();
+  assert.equal((await readTopics()).find(item => item.name === '离线新词').id, '0');
+  await topicDescriptionInput.fill('日期 #20190701 #20190702 #已有话题 #离线新词 #已有话题');
+  await topicOption('已有话题').click();
+  assert.equal((await readTopics()).find(item => item.name === '已有话题').id, 'existing-id', 'offline local candidates never downgrade a bound existing ID');
+  assert.equal(await topics.evaluate(() => fixture.calls.length), offlineCalls, 'offline name selection sends no requests');
+
+  await topics.evaluate(() => { fixture.online = true; fixture.mode = 'error'; });
+  await topicDescriptionInput.fill('日期 #20190701 #20190702 #已有话题 #离线新词 #查询失败新词');
+  await topics.locator('#association-results .resource-message').filter({hasText: '合成在线查询失败'}).waitFor();
+  const failedCalls = await topics.evaluate(() => fixture.calls.length);
+  await topicOption('查询失败新词').click();
+  assert.equal((await readTopics()).find(item => item.name === '查询失败新词').id, '0');
+  assert.equal(await topics.evaluate(() => fixture.calls.length), failedCalls, 'selecting the local candidate does not retry the failed remote lookup');
+
+  await topics.evaluate(() => { fixture.mode = 'names'; });
+  await topicDescriptionInput.fill('多个候选 #新话题');
+  await topicOption('新话题乙').waitFor();
+  assert.equal(await topics.locator('#association-results [role=option]').count(), 3, 'remote numeric zero IDs are retained separately by name alongside the exact local keyword');
+  await topicOption('新话题甲').click();
+  await topicDescriptionInput.fill('#新话题甲 #新话题');
+  await topicOption('新话题乙').waitFor();
+  assert.equal(await topicOption('新话题甲').getAttribute('aria-selected'), 'true');
+  assert.equal(await topicOption('新话题乙').getAttribute('aria-selected'), 'false', 'zero-ID selection state is matched by name');
+  await topicOption('新话题乙').click();
+  assert.deepEqual((await readTopics()).map(item => item.name).sort(), ['新话题乙', '新话题甲']);
+  await topics.evaluate(() => { fixture.online = false; });
+  await topicDescriptionInput.fill('#' + '长'.repeat(201));
+  assert.equal(await topics.locator('#association-results [role=option]').count(), 0, 'overlong names cannot create a candidate that payload validation would reject');
+  await topics.close();
   assert.deepEqual(errors, []);
-  console.log('resource UI passed: real host integration, collection covers/counts, account/draft page cache, declaration filtering/retry, exact caret tokens, music keyword/preview, searchable city and persisted POI, stale-page races, screenshots, no publication');
+  console.log('resource UI passed: real host integration, collection covers/counts, account/draft page cache, declaration filtering/retry, exact caret tokens, local named topics and existing-ID priority, offline/error selection, music keyword/preview, searchable city and persisted POI, stale-page races, screenshots, no publication');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

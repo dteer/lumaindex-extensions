@@ -42,6 +42,20 @@ function identities(values, label) {
   return result;
 }
 
+/** topicIdentities also accepts the official explicit name-topic sentinel; other resources still require real IDs. */
+function topicIdentities(values) {
+  if (!Array.isArray(values)) fail('话题列表无效。');
+  const result = values.map(value => {
+    if (!record(value) || value.id !== '0') return identity(value, '话题');
+    const name = text(value.name, '话题', 200).trim();
+    if (!name) fail('请重新选择话题。');
+    return {id: '0', name};
+  });
+  const identified = result.filter(value => value.id !== '0');
+  if (new Set(identified.map(value => value.id)).size !== identified.length) fail('话题不能重复选择同一身份。');
+  return result;
+}
+
 /** normalizeVisibility accepts the UI's named values and exact numeric aliases. */
 function normalizeVisibility(value) {
   if (typeof value === 'string' && OWN(VISIBILITY, value)) return value;
@@ -99,7 +113,7 @@ function bodyWithAssociations(draft) {
       const end = start + token.length;
       extras.push({start, end, caption_start: start, caption_end: end,
         type, hashtag_name: type === 1 ? value.name : '',
-        hashtag_id: type === 1 ? value.id : 0, user_id: type === 0 ? value.id : ''});
+        hashtag_id: type === 1 && value.id !== '0' ? value.id : 0, user_id: type === 0 ? value.id : ''});
     }
   }
   return {body, extras};
@@ -127,7 +141,7 @@ export function validateStudioDraft(draft, capabilities) {
   if (new Set(assets.map(asset => asset.id)).size !== assets.length) fail('不能重复添加同一素材。');
   const title = text(draft.title, '标题', limit(capabilities, 'titleLength', 20));
   const description = text(draft.description, '正文', limit(capabilities, 'descriptionLength', 1000), true);
-  const topics = identities(draft.topics ?? [], '话题');
+  const topics = topicIdentities(draft.topics ?? []);
   if (!Array.isArray(draft.activities ?? [])) fail('官方活动列表无效。');
   const activities = (draft.activities ?? []).map(value => ({...identity(value, '官方活动'), topic: identity(value.topic, '活动话题')}));
   if (new Set(activities.map(value => value.id)).size !== activities.length) fail('不能重复选择同一官方活动。');
@@ -141,7 +155,7 @@ export function validateStudioDraft(draft, capabilities) {
   if (new Set(topics.map(value => value.name)).size !== topics.length) fail('话题不能重复选择同一名称。');
   if (topics.length > 5) fail('话题和官方活动合计最多添加 5 个。');
   if (topics.some(topic => /[#\r\n]/u.test(topic.name))) fail('话题名称无效，请重新选择。');
-  if (topics.length) requireOperation(capabilities, 'topics.search', '话题关联');
+  if (topics.some(topic => topic.id !== '0')) requireOperation(capabilities, 'topics.search', '话题关联');
   if (mentions.length) requireOperation(capabilities, 'users.search', '@ 用户');
   if (activities.length) requireOperation(capabilities, 'activities.resolve', '官方活动');
   const result = {id: draft.id, name: text(draft.name ?? '', '作品名称', 200), kind: draft.kind,
@@ -192,7 +206,7 @@ export function validateStudioDraft(draft, capabilities) {
     const value = draft.cover;
     if (!record(value) || !['asset', 'frame', 'upload'].includes(value.type)) fail('封面选择无效。');
     if (value.type === 'asset') {
-      if (draft.kind !== 'image' || !assets.some(asset => asset.id === value.assetId)) fail('封面必须属于本次图片素材。');
+      if (draft.kind !== 'image' || typeof value.assetId !== 'string' || !ID.test(value.assetId)) fail('请从图库选择有效图片作为封面。');
       result.cover = {type: 'asset', assetId: value.assetId};
       if (value.crop !== undefined) {
         const crop = value.crop;
@@ -252,7 +266,7 @@ function publicationText(draft) {
   content = prefix + body;
   const common = {text: content,
     text_extra: JSON.stringify([...titleExtras, ...extras.map(value => ({...value, start: value.start + prefix.length, end: value.end + prefix.length}))]),
-    activity: JSON.stringify([...activityTopics]), challenges: JSON.stringify(draft.topics.map(value => value.id)),
+    activity: JSON.stringify([...activityTopics]), challenges: JSON.stringify(draft.topics.filter(value => value.id !== '0').map(value => value.id)),
     mentions: JSON.stringify(draft.mentions.map(value => value.id)),
     hashtag_source: draft.topics.map(value => activityTopics.has(value.id) ? 'recommend' : 'search').join('/')};
   if (draft.kind === 'video') Object.assign(common, {item_title: draft.title.trim(), caption: body});

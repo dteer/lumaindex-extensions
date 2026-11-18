@@ -58,9 +58,37 @@ async function nativeRequest(operation, params, replies) {
     calls.push({url: String(url), options});
     const reply = replies.shift();
     assert.ok(reply, 'unexpected native request');
+    if (reply instanceof Error) throw reply;
+    if (reply instanceof Response) return reply;
     return new Response(JSON.stringify(reply));
   })(operation, params);
   return {result, calls};
+}
+
+// 宿主稳定错误码和明确 HTTP 登录拒绝原样反馈；未知平台业务码不能猜成账号失效。
+for (const code of ['SESSION_EXPIRED', 'ACCOUNT_CHANGED', 'SESSION_CHANGED', 'NETWORK_CANCELLED']) {
+  const {result} = await nativeRequest('account', {}, [Object.assign(Error('合成宿主请求失败'), {code})]);
+  assert.equal(result.code, code); assert.match(result.error, /合成宿主/);
+}
+for (const status of [401, 403]) {
+  const {result} = await nativeRequest('account', {}, [new Response('login rejected', {status})]);
+  assert.equal(result.code, 'SESSION_EXPIRED'); assert.equal(result.ok, false);
+}
+assert.equal((await nativeRequest('account', {}, [{status_code: 123456}])).result.code, undefined);
+assert.equal((await nativeRequest('account', {}, [Object.assign(Error('失败'), {code: 'https://untrusted.example/error'})])).result.code, undefined);
+{
+  const {result, calls} = await nativeRequest('publication.publish', {expectedAccountId: '123', payload: {item: {common: {media_type: 2}}}}, [new Response('login rejected', {status: 401})]);
+  assert.equal(result.code, 'SESSION_EXPIRED'); assert.equal(result.definiteFailure, true); assert.equal(calls.length, 1);
+}
+for (const [module, method, params] of [
+  ['../app/platform/location.js', 'searchLocations', {cityCode: '440300', cityName: '深圳市', keyword: '公园', page: 1}],
+  ['../app/platform/collection.js', 'listCollections', {kind: 'image', cursor: '0'}],
+]) {
+  const request = (await import(module))[method];
+  const host = await request(params, async () => { throw Object.assign(Error('合成账号需要登录'), {code: 'SESSION_EXPIRED'}); });
+  assert.equal(host.code, 'SESSION_EXPIRED');
+  const response = await request(params, async () => new Response('login rejected', {status: 403}));
+  assert.equal(response.code, 'SESSION_EXPIRED');
 }
 {
   const result = await nativeRequest('music.search', {query: '钢琴', cursor: '20'}, [
@@ -74,10 +102,31 @@ async function nativeRequest(operation, params, replies) {
   assert.equal(url.origin, 'https://tsearch.amemv.com'); assert.equal(url.searchParams.get('keyword'), '钢琴');
   assert.equal(url.searchParams.get('aid'), '1128'); assert.equal(url.searchParams.get('cursor'), '20');
   assert.equal(search.options.credentials, 'omit'); assert.equal(search.options.redirect, 'error');
-  assert.deepEqual(search.options.headers, {'Agw-Auth': 'synthetic-short-lived-search-grant', 'Openapi-Omit-Shark': '1'});
+  assert.deepEqual(search.options.headers, {accept: 'application/json, text/plain, */*', 'agw-auth': 'synthetic-short-lived-search-grant', 'openapi-omit-shark': '1'});
+  assert.equal(result.calls[0].options.headers.accept, 'application/json, text/plain, */*');
   assert.equal(result.result.data.nextCursor, '40'); assert.equal(result.result.data.items[0].duration, 23);
   assert.equal(result.result.data.items[0].userCount, 120);
   assert.equal(JSON.stringify(result.result).includes('synthetic-short-lived-search-grant'), false);
+}
+// JSON 协议层统一补 Accept；发布的 JSON 类型、显式 Accept 与签名字段仍优先保留。
+{
+  const result = await nativeRequest('publication.publish', args, [{status_code: 0, user: {uid: '123'}}, {status_code: 0, item_id: '888'}]);
+  assert.equal(result.result.ok, true);
+  assert.ok(result.calls.every(item => item.options.headers.accept === 'application/json, text/plain, */*'));
+  assert.equal(result.calls[1].options.headers['content-type'], 'application/json');
+  const {creatorJSONOptions} = await import('../app/platform/browser-request.js');
+  assert.deepEqual(creatorJSONOptions({headers: {'aCcEpT': 'application/problem+json', 'Content-Type': 'custom/type', Authorization: 'synthetic-signed'}}).headers,
+    {accept: 'application/problem+json', authorization: 'synthetic-signed', 'content-type': 'custom/type'});
+  const calls = [], send = async (url, options) => {
+    calls.push({url, options});
+    return new Response(JSON.stringify({status_code: 0, has_more: false, mix_list: [], poi_list: []}));
+  };
+  const {searchLocations} = await import('../app/platform/location.js');
+  const {listCollections} = await import('../app/platform/collection.js');
+  assert.equal((await searchLocations({cityCode: '110100', cityName: '北京市', keyword: '合成地点', page: 1}, send)).ok, true);
+  assert.equal((await listCollections({kind: 'image', cursor: '0'}, send)).ok, true);
+  assert.ok(calls.every(item => item.options.headers.accept === 'application/json, text/plain, */*'));
+  assert.ok(calls.every(item => !Object.keys(item.options.headers).some(name => ['origin', 'referer', 'user-agent'].includes(name) || name.startsWith('sec-'))));
 }
 {
   const denied = await nativeRequest('music.search', {query: '钢琴'}, [{status_code: 1001}]);
@@ -226,3 +275,24 @@ console.log('native activities: bounded directory hints, exact detail string ID 
   for (const invalid of [9007199254740992, '1'.repeat(31), '1e16', '-1', '']) assert.equal((await nativeRequest('music.list', {category_id: '1', type: 'fav', cursor: invalid, creation_id: 'fixture'}, [])).calls.length, 0);
 }
 console.log('native music catalog: real identities, bounded shape, exact long favorite cursors, terminal page and repeated-cursor rejection passed');
+
+// 官方详情仅提供身份元数据：GET id 参数，不假装返回新的试听音源或时长。
+{
+  const reply = {status_code: 0, music_id: '900001', music_name: '平台更新后的名称', music_author: '合成作者', cover_url: 'https://media.example.test/cover.jpg'};
+  const result = await nativeRequest('music.resolve', {id: '900001'}, [reply]);
+  assert.equal(result.result.ok, true);
+  const url = new URL(result.calls[0].url);
+  assert.equal(url.pathname, '/web/api/media/music/info/');
+  assert.deepEqual(Object.fromEntries(url.searchParams), {id: '900001'});
+  assert.equal(result.calls[0].options.credentials, 'include');
+  assert.equal(result.result.data.id, '900001'); assert.equal(result.result.data.name, reply.music_name);
+  assert.equal(result.result.data.previewURL, null); assert.equal(result.result.data.duration, undefined);
+  for (const params of [{id: 900001}, {id: 'x'}, {id: '900001', query: '名字'}, {id: '900001', url: 'https://example.test'}]) {
+    const denied = await nativeRequest('music.resolve', params, []);
+    assert.equal(denied.result.ok, false); assert.equal(denied.calls.length, 0);
+  }
+  for (const data of [{...reply, music_id: '900002'}, {...reply, music_id: 900001}, {...reply, music_name: ''}, {status_code: 5}, {status_code: 0}]) {
+    assert.equal((await nativeRequest('music.resolve', {id: '900001'}, [data])).result.ok, false);
+  }
+}
+console.log('native music info: official id query, exact ID binding, metadata-only response and malformed/unavailable rejection passed');

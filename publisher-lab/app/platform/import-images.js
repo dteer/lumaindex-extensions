@@ -23,8 +23,14 @@ export async function importImages({job, account, origin, previous = [], base = 
   const stats = {total: 0, uploaded: 0, reused: 0, coverUploaded: 0, coverReused: 0, duplicates: 0};
 
   // progress 的显示失败不能令已成功上传的资源失去检查点或被误判为需要重新上传。
-  async function progress(phase, assetID) {
-    try { await onProgress?.({phase, completed, total: stats.total, ...(assetID ? {assetID} : {})}); } catch {}
+  async function progress(phase, asset, role = 'image', message) {
+    try { await onProgress?.({phase, completed, total: stats.total, countRole: 'image',
+      ...(asset ? {assetID: asset.id, assetId: asset.id, assetName: asset.name, role} : {}), ...(message ? {message} : {})}); } catch {}
+  }
+
+  // failed 只标记真正失败的这一项；用户取消及其他上传通道的结果保持各自状态。
+  async function failed(error, asset, role = 'image') {
+    if (!dependencies.signal?.aborted && error?.name !== 'AbortError') await progress('failed', asset, role, role === 'cover' ? '封面处理失败' : '图片处理失败');
   }
 
   // authorization 惰性获取本次账号的上传凭据，仅在内存中供本批次使用。
@@ -62,10 +68,47 @@ export async function importImages({job, account, origin, previous = [], base = 
   }
   stats.total = assets.length;
   stats.duplicates = resolution.duplicates || 0;
+  // 封面是独立图库引用；正文索引仅保留给已有调用方，不把外部封面插入正文清单。
+  const explicitCover = job.settings?.coverAsset;
+  const coverIndex = job.settings?.coverIndex;
+  const source = explicitCover ?? (coverIndex !== undefined ? job.assets[coverIndex] : undefined);
+  const crop = job.settings?.coverCrop;
+  let coverJob, coverAsset;
+  if (source !== undefined || coverIndex !== undefined || crop !== undefined) {
+    if (!source || typeof source.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(source.id) ||
+        explicitCover !== undefined && coverIndex !== undefined ||
+        coverIndex !== undefined && (!Number.isInteger(coverIndex) || !crop) ||
+        crop !== undefined && (!crop || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(crop[key])) ||
+          crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 ||
+          crop.x + crop.width > 1.000001 || crop.y + crop.height > 1.000001)) {
+      throw Error('封面选择或裁剪区域无效，请重新选择图库图片。');
+    }
+    coverJob = {...job, assets: [{id: source.id, name: source.name || '封面.jpg', kind: 'image'}]};
+    const resolved = await resolveAssets(coverJob, origin);
+    coverAsset = resolved.assets?.[0];
+    if (resolved.assets?.length !== 1 || !coverAsset || coverAsset.kind !== 'image' ||
+        typeof coverAsset.revision !== 'string' || !coverAsset.revision) throw Error('封面图片不可用或无法确认文件版本，请重新选择。');
+    const bodyAsset = assets.find(item => item.id === coverAsset.id);
+    if (bodyAsset && bodyAsset.revision !== coverAsset.revision || job.assets.some(item => item.id === source.id) && !bodyAsset) {
+      throw Error('封面素材版本已变化，请重新准备。');
+    }
+  }
+
+  // 读取、裁剪、上传和最终交付均复核同一图库源及版本，避免用旧记录绑定已变更的封面文件。
+  async function verifyCoverSource() {
+    if (!coverAsset) return;
+    const current = await resolveAssets(coverJob, origin), asset = current.assets?.[0];
+    if (current.assets?.length !== 1 || asset?.id !== coverAsset.id || asset.kind !== 'image' || asset.revision !== coverAsset.revision) {
+      throw Error('封面源文件已变化，请重新准备。');
+    }
+  }
   const files = new Array(assets.length), missing = [];
   for (const [index, asset] of assets.entries()) {
     const saved = reusable('image', asset);
-    if (saved) { files[index] = structuredClone(saved.uploadFile); stats.reused++; completed++; }
+    if (saved) {
+      files[index] = structuredClone(saved.uploadFile); stats.reused++; completed++;
+      await progress('reused', asset);
+    }
     else missing.push({index, asset});
   }
 
@@ -79,13 +122,13 @@ export async function importImages({job, account, origin, previous = [], base = 
         const {index, asset} = missing[next++];
         let prepared;
         try {
-          await progress('reading', asset.id);
+          await progress('reading', asset);
           if (failure) return;
           prepared = await prepareFile(job, origin, asset);
           if (!prepared?.file || prepared.assetID !== asset.id || prepared.revision !== (asset.revision || null)) throw Error('素材读取不完整或版本已变化，请重新带入。');
           if (failure) return;
           const auth = await authorization();
-          await progress('uploading', asset.id);
+          await progress('uploading', asset);
           if (failure) return;
           const result = await uploadImage(prepared.file, auth);
           // 成功响应只含远端资源元数据；在持久化前释放本地文件引用，下一张不会与上一张数据重叠驻留。
@@ -94,8 +137,8 @@ export async function importImages({job, account, origin, previous = [], base = 
           files[index] = structuredClone(record.uploadFile);
           stats.uploaded++;
           completed++;
-          await progress('uploading', asset.id);
-        } catch (error) { failure ??= error; }
+          await progress('uploaded', asset);
+        } catch (error) { failure ??= error; await failed(error, asset); }
         finally { prepared = null; }
       }
     }
@@ -106,33 +149,49 @@ export async function importImages({job, account, origin, previous = [], base = 
   }
 
   let cover;
-  if (job.settings?.coverIndex !== undefined) {
-    const source = job.assets[job.settings.coverIndex], crop = job.settings.coverCrop;
-    if (!Number.isInteger(job.settings.coverIndex) || !source || !crop ||
-        !['x', 'y', 'width', 'height'].every(key => Number.isFinite(crop[key])) ||
-        crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 ||
-        crop.x + crop.width > 1.000001 || crop.y + crop.height > 1.000001) {
-      throw Error('封面选择或裁剪区域无效，请重新选择封面。');
-    }
-    // 实况照片可能解析成另一张静态素材，正文去重也会改变索引；必须按原封面身份重新解析，不能套用正文下标。
-    const coverResolution = await resolveAssets({...job, assets: [source]}, origin);
-    const asset = coverResolution.assets?.[0];
-    if (!asset || coverResolution.assets.length !== 1) throw Error('封面素材不可用，请重新选择。');
-    const bodyAsset = assets.find(item => item.id === asset.id);
-    if (!bodyAsset || bodyAsset.revision !== asset.revision) throw Error('封面素材版本已变化，请重新带入。');
-    const saved = reusable('cover', asset, crop);
-    if (saved) { cover = structuredClone(saved.uploadFile); stats.coverReused++; }
-    else {
-      await progress('cover', asset.id);
-      const file = await cropCoverFile(origin, asset.id, crop);
-      const result = await uploadImage(file, await authorization());
-      const record = await remember('cover', asset, result?.uploadFile, crop);
-      cover = structuredClone(record.uploadFile);
-      stats.coverUploaded++;
-    }
+  if (coverAsset) {
+    try {
+      const bodyIndex = assets.findIndex(item => item.id === coverAsset.id);
+      // 正文中的原图封面继续复用已上传资源；外部图库封面及裁剪图独立上传和计数。
+      if (!crop && bodyIndex >= 0) {
+        cover = structuredClone(files[bodyIndex]); stats.coverReused++;
+        await progress('reused', coverAsset, 'cover');
+      }
+      else {
+        const saved = reusable('cover', coverAsset, crop);
+        if (saved) {
+          cover = structuredClone(saved.uploadFile); stats.coverReused++;
+          await progress('reused', coverAsset, 'cover');
+        }
+        else {
+          await progress(crop ? 'cropping' : 'reading', coverAsset, 'cover');
+          let file;
+          if (crop) file = await cropCoverFile(origin, coverAsset.id, crop);
+          else {
+            const prepared = await prepareFile(coverJob, origin, coverAsset);
+            if (!prepared?.file || prepared.assetID !== coverAsset.id || prepared.revision !== coverAsset.revision) {
+              throw Error('封面读取不完整或版本已变化，请重新准备。');
+            }
+            file = prepared.file;
+          }
+          await verifyCoverSource();
+          const auth = await authorization();
+          await progress('uploading', coverAsset, 'cover');
+          const result = await uploadImage(file, auth);
+          file = null;
+          await verifyCoverSource();
+          const record = await remember('cover', coverAsset, result?.uploadFile, crop);
+          cover = structuredClone(record.uploadFile);
+          stats.coverUploaded++;
+          await progress('uploaded', coverAsset, 'cover');
+        }
+      }
+      await verifyCoverSource();
+    } catch (error) { await failed(error, coverAsset, 'cover'); throw error; }
   }
 
   await progress('staging');
   const draft = await buildImageDraft({base, job, files, cover});
-  return {draft, records: structuredClone(records), stats};
+  return {draft, records: structuredClone(records), stats,
+    ...(coverAsset ? {coverSource: {source: structuredClone(coverJob.assets[0]), assetID: coverAsset.id, revision: coverAsset.revision}} : {})};
 }

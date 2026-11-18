@@ -44,6 +44,20 @@ try {
   await page.evaluate(() => { input.setSelectionRange(input.value.length,input.value.length); highlighter.render(); });
   await page.screenshot({path: output + 'studio-description-wide.png'});
 
+  // 新建话题的字符串 "0" 是有效身份；不同名称不能被按同一个 ID 合并，边界外的相似文本不高亮。
+  await page.evaluate(() => {
+    entities=[{kind:'topic',id:'0',name:'有序图库'},{kind:'topic',id:'0',name:'20190101'},{kind:'topic',id:'0',name:'20210706'},{kind:'topic',id:'0',name:'手动新话题'}];
+    input.value='#有序图库\n日期 #20190101，下一天 #20210706。#手动新话题\n#201901010 #202107060 #手动新话题扩展 #有序图库摄影 #未绑定\n再次 #20190101';
+    input.setSelectionRange(3,12,'backward');window.zeroBefore={value:input.value,start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection};highlighter.render();
+  });
+  assert.deepEqual(await page.locator('.studio-description-entity').allTextContents(), ['#有序图库', '#20190101', '#20210706', '#手动新话题', '#20190101']);
+  assert.deepEqual(await page.locator('.studio-description-entity').evaluateAll(nodes => nodes.map(node => node.dataset.entityId)), ['0', '0', '0', '0', '0']);
+  assert.equal(await page.locator('.studio-description-entity').first().evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(228, 240, 255)', 'new topic must use the normal light-blue entity mark');
+  assert.deepEqual(await page.evaluate(() => ({value:input.value,start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection})), await page.evaluate(() => zeroBefore));
+  await page.evaluate(() => { entities=entities.filter(item=>item.name!=='20190101');highlighter.render(); });
+  assert.deepEqual(await page.locator('.studio-description-entity').allTextContents(), ['#有序图库', '#20210706', '#手动新话题'], 'removing one zero-ID name must retain other zero-ID names');
+  assert.equal(await page.evaluate(() => inputEvents), 0, 'zero-ID highlighting must not rewrite input or dispatch edits');
+
   // 完整 Unicode 字符与词边界：补充平面汉字、组合音标、家庭 emoji、国旗均不可被截断。
   await page.evaluate(() => {
     entities=[{kind:'topic',id:'1',name:'摄影'},{kind:'topic',id:'2',name:'A'},{kind:'topic',id:'3',name:'Á'},{kind:'topic',id:'4',name:'👨‍👩‍👧'},{kind:'topic',id:'5',name:'🇨'},{kind:'topic',id:'6',name:'🌊'}];
@@ -90,5 +104,5 @@ try {
   assert.equal(await page.locator('.studio-description-highlight').count(),0);
   assert.equal(await page.locator('#description').evaluate(input=>document.activeElement===input),true);
   assert.deepEqual(errors,[]);
-  console.log('description UI passed: exact selected entities, Unicode/grapheme boundaries, unchanged text/selection/focus, native accessibility, 3-character token, narrow wrapping, scroll and font sync, disposal');
+  console.log('description UI passed: exact selected entities, distinct zero-ID names, light-blue marks, Unicode/grapheme boundaries, unchanged text/selection/focus, native accessibility, narrow wrapping, scroll and font sync, disposal');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

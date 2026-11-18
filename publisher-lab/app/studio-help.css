@@ -1,0 +1,48 @@
+/* 窄窗口标签列相差不足一个字距时，也让问号留在设置名称旁。 */
+#download-label { white-space: nowrap; }
+/* 保持原问号的 13px 灰圆，不继承普通表单按钮的最小高度和内边距。 */
+button.setting-help,
+button.setting-help:hover:not(:disabled),
+button.setting-help:active:not(:disabled) {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  vertical-align: middle;
+  width: 13px;
+  height: 13px;
+  min-height: 13px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #b5b5b9;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 13px;
+  cursor: help;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+/* 扩大指针命中范围，同时保留原有行内占位大小。 */
+button.setting-help::before { content: ''; position: absolute; inset: -5px; }
+.setting-help-tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: min(330px, calc(100vw - 24px));
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #eeeef1;
+  border-radius: 8px;
+  background: #fff;
+  color: #555661;
+  box-shadow: 0 5px 20px #16182314;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.setting-help-tooltip[hidden] { display: none; }

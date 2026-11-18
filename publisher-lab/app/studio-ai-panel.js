@@ -1,5 +1,4 @@
-import {defaultPrompt} from './ai-copy.js';
-import {dateTag} from './ai-context.js';
+import {defaultPrompt, currentPrompt} from './ai-copy.js';
 
 // node 使用文本节点显示作品信息和模型建议，不将生成内容作为 HTML 执行。
 function node(tag, className = '', text) {
@@ -102,7 +101,10 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
   async function run(retry = false) {
     if (job || applying) return;
     const assetIds = useImages ? images().filter(asset => selected.has(asset.id)).map(asset => asset.id) : [];
-    const directory = assetDetail(current().assets[0]?.id)?.directoryName || '';
+    const firstImage = current().assets.find(asset => asset.kind === 'image');
+    const source = firstImage && !firstImage.localOnly ? assetDetail(firstImage.id) : null;
+    const directory = source?.directoryName || '';
+    const tag = source?.dateTag || ''; // 拍照日期始终跟随正文首图，不跟随勾选分析的缩略图。
     if (!retry && (!$('ai-context').value.trim() && !assetIds.length && !directory || useImages && !assetIds.length)) {
       const message = useImages ? '请至少勾选一张图片，或关闭图片分析并填写作品信息。' : '请填写作品信息，或开启图片分析并勾选图片。';
       $('ai-status').textContent = message; window.alert(message); return;
@@ -110,7 +112,6 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
     const previous = result;
     if (!retry) clearResult();
     const controller = new AbortController(); job = controller;
-    const tag = dateTag(); // 一次生成固定本机日期，避免跨午夜时背景与正文末尾标签不一致。
     controls();
     try {
       const options = {signal: controller.signal, onProgress: value => { if (job === controller && dialog.open) $('ai-status').textContent = value.message; }};
@@ -143,7 +144,9 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
       cancel(); draftId = current().id; selected.clear(); useImages = false;
       $('ai-use-images').checked = false;
       $('ai-context').value = current().aiContext || '';
-      $('ai-prompt').value = preferences().aiPrompt || defaultPrompt;
+      const savedPrompt = preferences().aiPrompt;
+      $('ai-prompt').value = currentPrompt(savedPrompt);
+      if (savedPrompt && savedPrompt !== $('ai-prompt').value) savePreferences({aiPrompt: $('ai-prompt').value});
       if (dialog.open) dialog.close();
     }
     if (result && !assistant.isCurrent(result)) {

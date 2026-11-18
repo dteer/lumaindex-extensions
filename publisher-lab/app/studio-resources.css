@@ -1,5 +1,9 @@
 /* 资源选择沿用抖音的浅灰字段、紧邻下拉和右侧音乐抽屉。 */
 .resource-anchor { position: relative; min-width: 0; }
+.resource-field-control { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.resource-field-control > .resource-select { flex: 1; min-width: 0; }
+.resource-clear { flex-shrink: 0; width: 28px; min-height: 28px; padding: 0; border: 0; background: transparent; color: #95959f; font-size: 18px; }
+.resource-clear[hidden] { display: none; }
 .resource-select { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 4px; background: #f8f8fa; color: #777983; text-align: left; font-size: 12px; }
 .resource-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resource-select.field-action::after { flex-shrink: 0; }

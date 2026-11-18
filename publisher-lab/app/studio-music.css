@@ -34,7 +34,7 @@
 .studio-music-usage { flex-shrink: 0; color: #b0b0b7; font-size: 12px; line-height: 1.4; white-space: nowrap; }
 .music-drawer .studio-music-use { display: none; flex-shrink: 0; min-width: 56px; height: 32px; min-height: 0; padding: 0 12px; border: 0; border-radius: 5px; background: #000; color: #fff; font-size: 13px; font-weight: 500; }
 .music-drawer .studio-music-use:hover:not(:disabled), .music-drawer .studio-music-use:active:not(:disabled) { border: 0; background: #252528; }
-.music-drawer .studio-music-row:hover .studio-music-use, .music-drawer .studio-music-row:focus-within .studio-music-use, .music-drawer .studio-music-row.is-current .studio-music-use, .music-drawer .studio-music-row.is-selected .studio-music-use { display: block; }
+.music-drawer .studio-music-row:hover .studio-music-use, .music-drawer .studio-music-row:focus-within .studio-music-use, .music-drawer .studio-music-row.is-current .studio-music-use, .music-drawer .studio-music-row.is-selected .studio-music-use, .music-drawer .studio-music-row.is-selecting .studio-music-use { display: block; }
 .music-drawer .studio-music-use:disabled { opacity: .4; background: #000; color: #fff; }
 .studio-music-row.is-current .studio-music-name { color: #5684ff; }
 .studio-music-row.is-current .studio-music-row-cover { outline-color: #5684ff; }

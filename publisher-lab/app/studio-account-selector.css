@@ -1,0 +1,14 @@
+.account-actions { max-height: calc(100dvh - 76px); overflow-y: auto; overscroll-behavior: contain; }
+.account-selector { min-width: 0; width: 100%; }
+.account-actions .account-selector-button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 10px; border: 1px solid #e3e7ee; border-radius: 6px; background: #fff; color: #33343b; }
+.account-actions .account-selector-button:hover:not(:disabled), .account-actions .account-selector-button[aria-expanded="true"] { border-color: #b9d4f3; background: #f5faff; }
+.account-actions .account-selector-button:focus-visible { outline: 2px solid #86b7ed; outline-offset: 2px; }
+.account-selector-value { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-selector-chevron { width: 6px; height: 6px; flex: 0 0 6px; margin-top: -3px; border-right: 1px solid #8a93a1; border-bottom: 1px solid #8a93a1; transform: rotate(45deg); }
+.account-selector-list { box-sizing: border-box; width: 100%; max-height: min(224px, 35dvh); overflow-y: auto; overscroll-behavior: contain; margin-top: 6px; padding: 4px; border: 1px solid #e3e7ee; border-radius: 6px; background: #fff; box-shadow: 0 3px 12px #20334f0a; }
+.account-selector-option { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 32px; padding: 5px 6px; border-radius: 4px; color: #33343b; font-size: 12px; line-height: 20px; cursor: pointer; }
+.account-selector-option:hover:not([aria-disabled="true"]), .account-selector-option.is-active:not([aria-disabled="true"]) { background: #eaf4ff; color: #2468a8; }
+.account-selector-option[aria-disabled="true"] { color: #a1a7b0; cursor: default; }
+.account-selector-check { width: 13px; flex: 0 0 13px; color: #377dbd; visibility: hidden; }
+.account-selector-option[aria-selected="true"] .account-selector-check { visibility: visible; }
+.account-selector-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -40,10 +40,53 @@ try {
     const menu = page.locator('#account-menu');
     if (await menu.evaluate(node => node.open) !== open) await menu.locator('summary').click();
   }
+  // 原 select 仅保存模型；切换必须经过用户实际看到的网页账号框与候选。
+  async function selectAccount(profileId) {
+    await page.locator('#account-select-button').click();
+    await page.locator(`#account-select-listbox [role=option][data-value="${profileId}"]`).click();
+  }
+  // 桌面左右栏有独立滚动位置；重置截图视图时不能再只移动 window。
+  async function resetWorkspaceScroll() {
+    await page.evaluate(() => { scrollTo(0, 0); for (const node of document.querySelectorAll('.editor-column, .preview-column')) node.scrollTop = 0; });
+  }
+  // 使用 Chrome 真实 wheel 输入验证网页布局边界；不等同于 macOS 触控板的系统惯性/橡皮筋效果。
+  async function verifyWorkspaceScroll() {
+    await page.setViewportSize({width: 1290, height: 700}); await resetWorkspaceScroll(); await page.locator('#description').focus();
+    const snapshot = () => page.evaluate(() => {
+      const rect = selector => { const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect(); return {x, y, width, height}; };
+      return {toolbar: rect('.studio-toolbar'), preview: rect('.preview-column'), height: document.querySelector('.editor-column').scrollHeight,
+        documentHeight: document.documentElement.scrollHeight, bodyY: scrollY, rightY: document.querySelector('.preview-column').scrollTop};
+    });
+    const before = await snapshot(), input = await page.locator('#description').boundingBox();
+    await page.mouse.move(input.x + 20, input.y + 20); await page.mouse.wheel(0, 10000);
+    await page.waitForFunction(() => { const node = document.querySelector('.editor-column'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
+    const bottom = await page.locator('.editor-column').evaluate(node => node.scrollTop);
+    for (let i = 0; i < 3; i++) await page.mouse.wheel(0, 900);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('.editor-column').evaluate(node => node.scrollTop), bottom, 'continued downward wheel must remain at the editor bottom');
+    assert.deepEqual(await snapshot(), before, 'scrolling the focused editor must not move toolbar/preview or change content/page height');
+    await page.screenshot({path: output + 'studio-fixed-workspace-bottom.png'});
+    await page.mouse.wheel(0, -350); await page.waitForFunction(previous => document.querySelector('.editor-column').scrollTop < previous, bottom);
+    assert.deepEqual(await snapshot(), before, 'upward editor scrolling must preserve fixed layout and independent preview position');
+    await page.setViewportSize({width: 1290, height: 520});
+    const preview = await page.locator('.preview-column').boundingBox();
+    // 手机画面本身处理翻图滚轮；从预览标题区域验证右栏自身滚动。
+    await page.mouse.move(preview.x + 15, preview.y + 8); await page.mouse.wheel(0, 10000);
+    await page.waitForFunction(() => { const node = document.querySelector('.preview-column'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
+    const capability = await page.locator('.capability-panel summary').boundingBox();
+    assert.ok(capability.y >= preview.y && capability.y + capability.height <= preview.y + preview.height + 1, 'short desktop viewport must keep bottom preview capabilities reachable by its own scroll');
+    await page.screenshot({path: output + 'studio-fixed-workspace-short.png'});
+    await page.setViewportSize({width: 560, height: 700}); await resetWorkspaceScroll();
+    assert.equal(await page.locator('.preview-column').isVisible(), false);
+    await page.mouse.move(40, 300); await page.mouse.wheel(0, 450); await page.waitForFunction(() => scrollY > 0);
+    assert.equal((await page.locator('.studio-toolbar').boundingBox()).y, 0, 'narrow layout keeps natural page scrolling with a pinned toolbar');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.setViewportSize({width: 1290, height: 900}); await resetWorkspaceScroll();
+  }
   // 检查实际编辑首屏的比例，避免功能通过但又堆出多层标题或大块空白。
   async function inspectEditorLayout(width, screenshot) {
     await page.setViewportSize({width, height: 900});
-    await page.evaluate(() => scrollTo(0, 0));
+    await resetWorkspaceScroll();
     const metrics = await page.evaluate(() => {
       const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width, height: r.height}; };
       return {card: rect('.basic-card'), preview: rect('.preview-column'), description: rect('.description-editor'), cover: rect('.cover-row'),
@@ -68,11 +111,11 @@ try {
     return metrics;
   }
   await page.addInitScript(({origin}) => {
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: {}, libraryID: 'native-ui-fixture'};
+    window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: {}, libraryID: 'native-ui-fixture'};
     let active = null, loginCount = 0; const runtime = {}, profiles = [];
     window.__nativeTest = {messages: [], state: {}};
-    const status = () => ({hasCookies: active?.hasCookies === true, activeProfileId: active?.id || null, accountId: active?.accountId || null, name: active?.name || null, expiresAt: active?.expiresAt || null});
-    window.__nativeTest.expireProfile = id => { profiles.find(item => item.id === id).hasCookies = false; };
+    const status = () => ({browserSessionAvailable: active?.browserSessionAvailable === true, hasCookies: active?.hasCookies === true, activeProfileId: active?.id || null, accountId: active?.accountId || null, name: active?.name || null, expiresAt: active?.expiresAt || null});
+    window.__nativeTest.expireProfile = id => { profiles.find(item => item.id === id).browserSessionAvailable = false; };
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
       window.__nativeTest.messages.push(structuredClone(message));
       if (message.op === 'persist') { if (window.__nativeTest.failPersist) throw Error('合成保存失败'); window.__nativeTest.state = structuredClone(message.value); return {ok: true}; }
@@ -83,14 +126,20 @@ try {
       if (message.op === 'session.status') return {ok: true, data: status()};
       if (message.op === 'session.login') {
         if (window.__nativeTest.cancelLogin) return {ok: false, error: {code: 'SESSION_LOGIN_CANCELLED', message: '已取消网站登录，原有会话未改变。'}};
-        active = {id: 'profile-' + ++loginCount, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString(), identity: window.__nativeTest.nextAccount || {id: '123', name: '合成 UI 测试账号'}};
+        const target = message.profileId ? profiles.find(item => item.id === message.profileId) : null;
+        if (message.profileId && !target) throw Error('Unknown relogin profile');
+        active = {id: 'profile-' + ++loginCount, reloginProfileId: message.profileId, browserSessionAvailable: true, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString(), identity: window.__nativeTest.nextAccount || target?.identity || {id: '123', name: '合成 UI 测试账号'}};
         return {ok: true, data: status()};
       }
       if (message.op === 'session.identify') {
         if (message.profileId !== active?.id) throw Error('Profile changed during verification');
         const existing = profiles.find(item => item.accountId === message.accountId);
-        if (existing) { Object.assign(existing, active, {id: existing.id}); active = existing; }
-        else profiles.push(active);
+        if (active.reloginProfileId) {
+          const target = profiles.find(item => item.id === active.reloginProfileId);
+          if (target?.accountId !== message.accountId) return {ok: false, error: {code: 'SESSION_IDENTITY_MISMATCH', message: '所选账号不一致。'}};
+          Object.assign(target, active, {id: target.id}); delete target.reloginProfileId; active = target;
+        } else if (existing && existing.id !== active.id) return {ok: false, error: {code: 'SESSION_ACCOUNT_EXISTS', message: '账号已存在。'}};
+        else if (!existing) profiles.push(active);
         Object.assign(active, {accountId: message.accountId, name: message.name});
         return {ok: true, data: status()};
       }
@@ -99,10 +148,16 @@ try {
         return {ok: true, data: {items: profiles.slice(offset, end).map(({identity, ...item}) => item), activeProfileId: active?.id || null, hasMore: end < profiles.length, nextOffset: end < profiles.length ? end : null}};
       }
       if (message.op === 'session.select') { active = profiles.find(item => item.id === message.profileId); if (!active) throw Error('Unknown profile'); return {ok: true, data: status()}; }
-      if (message.op === 'session.clear') { const index = profiles.findIndex(item => item.id === (message.profileId || active?.id)); if (index >= 0) profiles.splice(index, 1); active = null; return {ok: true, data: status()}; }
+      if (message.op === 'session.clear') {
+        const targetId = message.profileId || active?.id, index = profiles.findIndex(item => item.id === targetId);
+        if (message.keepBrowserData === true && (!message.profileId || index >= 0 || active?.id !== targetId || active?.accountId)) throw Error('Only unidentified candidates may retain website data');
+        if (index >= 0) profiles.splice(index, 1);
+        if (active?.id === targetId) active = null;
+        return {ok: true, data: status()};
+      }
       if (message.op === 'state.get') return {ok: true, data: message.keys ? {[message.keys]: runtime[message.keys]} : runtime};
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
-      if (message.op === 'session.request') {
+      if (message.op === 'browser.request') {
         const url = new URL(message.url); let data;
         if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: active.identity.id, nickname: active.identity.name}};
         else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '222', cha_name: '测试摄影话题'}]};
@@ -132,6 +187,7 @@ try {
   await accountMenu();
   assert.equal(await page.getByRole('button', {name: '添加账号', exact: true}).isVisible(), true);
   assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
+  assert.equal(await page.getByRole('button', {name: '重新登录当前账号', exact: true}).isVisible(), true);
   await accountMenu(false);
   await page.getByRole('button', {name: '选择图库图片', exact: false}).click();
   await page.waitForFunction(() => document.body.dataset.phase === 'editing' && !document.body.classList.contains('busy'));
@@ -153,6 +209,13 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts[0].cover?.assetId === 'fixture-image');
   assert.equal(await page.evaluate(() => window.__nativeTest.state.drafts[0].assets.length), 1);
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length), firstSelectionCount, 'current-image cover selection does not reopen the library or upload anything');
+  // 独立图库封面只绑定封面，不加入正文，也不改变正文顺序。
+  await page.evaluate(() => { window.__nativeTest.nextSelection = ['fixture-image-2']; });
+  await page.locator('#choose-cover').click();
+  await page.locator('#cover-picker-library').click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts[0].cover?.assetId === 'fixture-image-2');
+  assert.deepEqual(await page.evaluate(() => window.__nativeTest.state.drafts[0].assets.map(item => item.id)), ['fixture-image']);
+  assert.deepEqual(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').at(-1)), {op: 'assets.select', kind: 'image', maximumCount: 1, excludeAssetIDs: []});
   const beforeCancel = await page.evaluate(() => structuredClone(window.__nativeTest.state.drafts[0]));
   await page.evaluate(() => { window.__nativeTest.holdSelection = true; });
   await page.locator('#add-library-media').click();
@@ -185,7 +248,7 @@ try {
   assert.equal(await page.locator('#schedule-fields').isVisible(), false);
   assert.equal(await page.locator('#search-declaration').isDisabled(), false);
   await page.locator('#page-notice').waitFor({state: 'hidden', timeout: 7000});
-  await page.evaluate(() => scrollTo(0, 0));
+  await resetWorkspaceScroll();
   await page.screenshot({path: output + 'studio-native-session-wide.png', fullPage: true});
   const layouts = [];
   layouts.push(await inspectEditorLayout(1440, 'studio-native-session-viewport.png'));
@@ -200,6 +263,7 @@ try {
   const focusRGB = focusStyle.color.match(/\d+/g)?.slice(0, 3).map(Number) || [];
   assert.ok(focusStyle.style === 'none' || focusStyle.width === 0 || (focusRGB.length === 3 && Math.max(...focusRGB) - Math.min(...focusRGB) < 35), 'editor focus does not draw a clipped blue line');
   await page.screenshot({path: output + 'studio-native-session-focus.png'});
+  await verifyWorkspaceScroll();
   await page.locator('#description').blur();
   await page.setViewportSize({width: 1440, height: 1000});
   await page.locator('#open-drafts').click();
@@ -228,7 +292,7 @@ try {
   assert.equal(await page.locator('#account-select option').count(), 3);
   await accountMenu();
   const loginsBeforeSwitch = await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'session.login').length);
-  await page.locator('#account-select').selectOption('profile-1');
+  await selectAccount('profile-1');
   await page.locator('#connection-label').filter({hasText: '合成 UI 测试账号'}).waitFor();
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'session.login').length), loginsBeforeSwitch);
   await page.evaluate(() => { window.__nativeTest.cancelLogin = true; });
@@ -237,21 +301,42 @@ try {
   await page.getByText('已取消网站登录，原有会话未改变。', {exact: true}).waitFor();
   assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
   await page.evaluate(() => { window.__nativeTest.cancelLogin = false; window.__nativeTest.holdAccount = true; });
-  await page.locator('#account-select').selectOption('profile-2');
+  const identitiesBeforeSwitch = await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'browser.request' && item.url.includes('/user/info/')).length);
+  await selectAccount('profile-2');
+  await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
+  assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'browser.request' && item.url.includes('/user/info/')).length), identitiesBeforeSwitch);
+  await accountMenu(); await page.getByRole('button', {name: '检查会话', exact: true}).click();
   await page.waitForFunction(() => typeof window.__nativeTest.finishAccount === 'function');
   assert.equal(await page.locator('#account-select').isDisabled(), true);
+  assert.equal(await page.locator('#account-select-button').isDisabled(), true, 'visible account control must also stay disabled while checking');
   assert.equal(await page.locator('#prepare').isDisabled(), true);
   await page.evaluate(() => { window.__nativeTest.holdAccount = false; window.__nativeTest.finishAccount(); });
   await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
   await page.evaluate(() => { window.__nativeTest.expireProfile('profile-1'); });
   await accountMenu();
-  await page.locator('#account-select').selectOption('profile-1');
+  await selectAccount('profile-1');
   await page.waitForFunction(() => !document.querySelector('#account-select').disabled);
   assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
   assert.match(await page.locator('#account-select option:checked').textContent(), /需重新登录/);
-  assert.equal(await page.locator('#prepare').isDisabled(), true);
+  assert.match(await page.locator('#connection-label').textContent(), /合成 UI 测试账号.*离线/);
+  assert.equal(await page.locator('#search-music').isDisabled(), false, 'offline status must not remove existing editing capabilities');
+  assert.equal(await page.locator('#title').isDisabled(), false);
   await accountMenu();
-  await page.locator('#account-select').selectOption('profile-2');
+  assert.equal(await page.getByRole('button', {name: '添加账号', exact: true}).isVisible(), true);
+  await page.evaluate(() => { window.__nativeTest.nextAccount = {id: '123', name: '合成 UI 测试账号'}; });
+  await page.getByRole('button', {name: '重新登录当前账号', exact: true}).click();
+  await page.locator('#connection-label').filter({hasText: '合成 UI 测试账号'}).waitFor();
+  assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
+  assert.equal(await page.locator('#account-select option').count(), 3, '重新登录不能创建额外账号');
+  assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'session.login').at(-1).profileId), 'profile-1');
+  assert.equal(await page.evaluate(() => Object.hasOwn(window.__nativeTest.messages.filter(item => item.op === 'session.login').at(-1), 'userAgent')), false);
+  await accountMenu();
+  await page.evaluate(() => { window.__nativeTest.cancelLogin = true; });
+  await page.getByRole('button', {name: '重新登录当前账号', exact: true}).click();
+  await page.getByText('已取消网站登录，原有会话未改变。', {exact: true}).waitFor();
+  assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
+  await page.evaluate(() => { window.__nativeTest.cancelLogin = false; });
+  await selectAccount('profile-2');
   await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__nativeTest.state), draftBeforeSwitch);
   await accountMenu();
@@ -351,23 +436,27 @@ try {
   await page.evaluate(() => { window.__nativeTest.failPersist = true; });
   await page.getByRole('button', {name: '移除图片：界面测试图片3.jpg', exact: true}).click();
   await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 1);
-  assert.equal(await page.locator('#cover-name').textContent(), '未指定封面', 'removing cover clears its identity and crop');
+  assert.equal(await page.locator('#cover-name').textContent(), '界面测试图片3.jpg', 'removing a body reference preserves its independently selected cover');
   assert.match(await page.locator('#save-state').textContent(), /保存失败/);
   assert.deepEqual(alerts, ['合成保存失败']);
   assert.equal((await savedDraft()).assets.length, 2, 'failed persistence does not pretend to update saved state');
   await page.evaluate(() => { window.__nativeTest.failPersist = false; });
   await page.locator('#save-draft').click();
   await page.waitForFunction(() => document.querySelector('#save-state').textContent === '已保存至本机');
-  assert.equal((await savedDraft()).cover, null);
+  assert.deepEqual((await savedDraft()).cover, sortCover, 'retry retains independent cover and crop');
   assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-2'], 'retry saves the same edit without removing another picture');
   await page.getByRole('button', {name: '移除图片：界面测试图片2.jpg', exact: true}).click();
   await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 0);
-  assert.equal(await page.locator('#choose-cover').isDisabled(), true);
+  assert.equal(await page.locator('#choose-cover').isEnabled(), true, 'cover selection does not require body images');
+  await page.evaluate(() => { window.__nativeTest.nextSelection = ['fixture-image']; });
+  await page.locator('#choose-cover').click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts.find(item => item.id === window.__nativeTest.state.activeDraftId).cover?.assetId === 'fixture-image');
+  assert.equal((await savedDraft()).assets.length, 0, 'selecting a cover for an empty body never inserts it into body images');
   assert.equal(await page.locator('.studio-phone-progress').isHidden(), true);
   assert.equal((await savedDraft()).title, '原生会话界面测试', 'removing all pictures preserves the copy');
   assert.equal(await page.locator('#search-dialog').isVisible(), false);
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => JSON.stringify(x).includes('chrome-extension://'))), false);
-  assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => x.op === 'session.request' && x.method === 'POST')), false);
+  assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => x.op === 'browser.request' && x.method === 'POST')), false);
   assert.deepEqual(errors, []);
   assert.equal(assetListRequests, 0, 'media selection never falls back to immediate-add asset search');
   console.log('native UI passed: multiple accounts, expired session, cancel and busy lock, unchanged drafts, source selection, cover, compact editor, 1440/1290/960/820/560; no real platform calls');

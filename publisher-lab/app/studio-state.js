@@ -22,12 +22,21 @@ export function entityValue(value) {
   return {id: textValue(value.id), name: textValue(value.name, 500)};
 }
 
+// topicKey 按平台身份区分已有话题；名称话题共用官方 0 标记，因此按名称区分。
+export function topicKey(value) {
+  return value.id === '0' ? 'name:' + value.name : 'id:' + value.id;
+}
+
 // entitiesValue 去重保存作品明确选择的话题、提及或声明资源。
-function entitiesValue(values) {
+function entitiesValue(values, topics = false) {
   const seen = new Set();
-  return (Array.isArray(values) ? values : []).map(entityValue).filter(value => {
-    if (!value || seen.has(value.id)) return false;
-    seen.add(value.id);
+  const entities = (Array.isArray(values) ? values : []).map(entityValue).filter(Boolean);
+  const knownNames = new Set(topics ? entities.filter(value => value.id !== '0').map(value => value.name) : []);
+  return entities.filter(value => {
+    if (topics && value.id === '0' && (!value.name || knownNames.has(value.name))) return false;
+    const key = topics ? topicKey(value) : value.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   }).slice(0, 50);
 }
@@ -84,7 +93,7 @@ export function sanitizeDraft(raw) {
     seen.add(asset.id);
     return true;
   }).slice(0, 100).map(asset => ({id: textValue(asset.id), name: textValue(asset.name, 500), kind: asset.kind, ...(asset.localOnly === true ? {localOnly: true} : {})}));
-  result.topics = entitiesValue(source.topics);
+  result.topics = entitiesValue(source.topics, true);
   result.mentions = entitiesValue(source.mentions);
   result.activities = activitiesValue(source.activities);
   for (const key of ['music', 'location', 'collection']) result[key] = entityValue(source[key]);
@@ -190,10 +199,10 @@ export class StudioStore {
     return this.data.drafts.find(draft => draft.id === this.data.activeDraftId) || this.data.drafts[0];
   }
 
-  // touch 标记本机内容变化，持久化动作由调用方统一调度。
-  touch() {
+  // touch 标记指定草稿变化；异步回执可更新发起查询的草稿，不误改当前编辑中的另一草稿。
+  touch(draft = this.current()) {
     this.revision += 1;
-    this.current().updatedAt = new Date().toISOString();
+    draft.updatedAt = new Date().toISOString();
   }
 
   // add 在上限内创建草稿，达到上限时保留所有已有作品。
@@ -221,10 +230,11 @@ export class StudioStore {
 
   // remove 只删除指定本机草稿，至少保留一个空白编辑入口。
   remove(id) {
+    if (!this.data.drafts.some(draft => draft.id === id)) return;
     this.data.drafts = this.data.drafts.filter(draft => draft.id !== id);
     if (!this.data.drafts.length) this.data.drafts.push(emptyDraft());
     if (this.data.activeDraftId === id) this.data.activeDraftId = this.data.drafts[0].id;
-    this.touch();
+    this.revision += 1;
   }
 
   // commit 顺序写入白名单快照；较早应答不会让较新修改错误显示为已保存。

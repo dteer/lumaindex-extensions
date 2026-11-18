@@ -1,9 +1,9 @@
 import {studioClient as client} from './studio-client.js';
-import {StudioStore, contentSignature, entityValue, newID, publicationDraft} from './studio-state.js';
+import {StudioStore, contentSignature, entityValue, newID, publicationDraft, topicKey} from './studio-state.js';
 import {editCoverCrop} from './cover-crop.js';
 import {createStudioAI} from './studio-ai.js';
 import {mountStudioAIPanel} from './studio-ai-panel.js';
-import {directoryName} from './ai-context.js';
+import {photoContext} from './ai-context.js';
 import {selectLibraryAssets} from './library-selection.js';
 import {mountStudioGallery, mountDouyinPreview} from './studio-gallery.js';
 import {mountResourceControls} from './studio-resources.js';
@@ -11,11 +11,18 @@ import {mountMusicDrawer, mountMusicCategories} from './studio-music.js';
 import {mountSavedMusicPreview} from './studio-saved-music.js';
 import {mountDescriptionHighlight} from './studio-description.js';
 import {mountActivities} from './studio-activities.js';
+import {mountSettingHelp} from './studio-help.js';
+import {mountPreparationProgress} from './studio-progress.js';
+import {mountAccountSelector} from './studio-account-selector.js';
 
 const $ = id => document.getElementById(id);
+mountSettingHelp(document.querySelector('#download-label .setting-help'), {
+  id: 'download-help-description',
+  text: '允许：其他用户可以下载保存作品。\n不允许：关闭平台提供的下载保存入口。',
+});
 const operationNames = {
   'publication.prepare': '素材上传与检查', 'publication.publish': '最终发布', 'publication.status': '发布状态',
-  'topics.search': '真实话题', 'users.search': '提及用户', 'music.search': '推荐音乐与搜索', 'music.categories': '音乐分类', 'declarations.list': '自主声明',
+  'topics.search': '真实话题', 'users.search': '提及用户', 'music.search': '推荐音乐与搜索', 'music.categories': '音乐分类', 'music.select': '保存选曲资料', 'music.resolve': '恢复已选音乐', 'declarations.list': '自主声明',
   'activities.list': '官方活动', 'activities.detail': '活动详情', 'activities.resolve': '活动话题核验',
   'locations.search': '城市与地点', 'collections.list': '普通合集', 'cover.upload': '图库图片封面', 'cover.frames': '视频帧封面',
 };
@@ -57,7 +64,8 @@ const store = new StudioStore(initialState, async value => {
 const assetDetails = new Map();
 const transientMedia = new Map();
 const resourcePreviews = new Map();
-const musicCandidates = new Map(); // 试听元数据只保存在当前页面内存，不随草稿写入。
+const musicCandidates = new Map(); // 本页候选在内存；已选音源由平台模块按账号和音乐 ID 单独保存在本机。
+let musicPreviewMessageIdentity = ''; // 行内提示只属于当前草稿、账号与选曲，切换后清除。
 const publicationLinks = new Map();
 let session = {connected: false, account: null, capabilities: {operations: []}, profiles: [], activeProfileId: null};
 let prepared = null;
@@ -70,7 +78,7 @@ let saving = false;
 let saveTimer = null;
 let noticeTimer = null;
 let connecting = false;
-let sessionRefreshing = null;
+const statusQueries = new Map(); // 发布状态只读查询按草稿独立管理，不锁住编辑器。
 let searchState = null;
 let searchController = null;
 let searchGeneration = 0;
@@ -78,6 +86,8 @@ let searchOpening = false;
 let cities = null;
 let musicSearchTimer = null; // 关键词防抖仅属于当前音乐抽屉，切分类或关闭即取消。
 let coverSelection = null; // 封面弹窗只保留当前草稿的暂选身份，确认前不修改作品。
+const preparationProgress = mountPreparationProgress({items: $('activity-items'), progress: $('activity-progress'), current, assetDetails});
+const accountSelector = mountAccountSelector($('account-select'));
 
 
 // gallery 与 phone 共用查看索引；只改变预览焦点，不改变发布顺序。
@@ -89,6 +99,7 @@ const resources = mountResourceControls({
   identity: () => `${current().id}:${session.activeProfileId || ''}:${session.account?.id || ''}`,
   blocked: () => busy || connecting,
   changed: () => { markChanged(); renderResources(); },
+  selectCollection,
 });
 
 // descriptionHighlight 只为已绑定身份的正文标记绘制底色，保留原生输入与实际字符数。
@@ -99,13 +110,13 @@ const descriptionHighlight = mountDescriptionHighlight($('description'), {getEnt
 
 // musicDrawer 以同一个音频元素管理试听与底部进度；只有“使用”才绑定作品配乐。
 const musicDrawer = mountMusicDrawer({results: $('search-results'), footer: $('music-playback'), audio: $('music-player'), safeURL,
-  onSelect: item => { void chooseResource(item); }});
+  onSelect: item => { void chooseResource(item); }, refreshPreview: refreshMusicPreview});
 // 已选配乐重开后按点击恢复试听地址，名称和身份始终保留在原草稿中。
 const savedMusicPreview = mountSavedMusicPreview({button: $('preview-music'), iconButton: $('preview-music-icon'), audio: $('music-player'),
   current: () => ({draftId: current().id, kind: current().kind, music: current().music, connected: session.connected,
     accountId: session.account?.id || '', profileId: session.activeProfileId || ''}),
-  ensureSession: refreshSession, request: (...args) => client.request(...args), play: item => musicDrawer.play(item),
-  stop: () => musicDrawer.stop(), safeURL, blocked: () => busy || connecting, onError: message => notice(message, true)});
+  request: (...args) => client.request(...args), play: item => musicDrawer.play(item, {refreshOnFailure: false}),
+  stop: () => musicDrawer.stop(), safeURL, blocked: () => busy || connecting, onError: message => musicPreviewNotice(message)});
 // musicCategories 只渲染真实分类；每次点击由下方搜索编排切换独立分页，不影响当前试听。
 const musicCategories = mountMusicCategories({container: $('music-tabs'), onSelect: item => {
   const state = searchState;
@@ -126,7 +137,7 @@ const activities = mountActivities({container: $('studio-activities'), current, 
 
 // aiAssistant 将模型分析和真实平台候选分开，应用前始终检查作品及账号身份。
 const aiAssistant = createStudioAI({client, getCurrent: () => ({draftId: current().id,
-  accountId: session.account?.id || '', profileId: session.activeProfileId || '', revision: contentSignature(current())})});
+  accountId: session.account?.id || '', profileId: session.activeProfileId || '', connected: session.connected, revision: contentSignature(current())})});
 const aiPanel = mountStudioAIPanel({assistant: aiAssistant, current, preferences: () => store.data,
   baseURL: context.apiBaseURL, mediaURL, safeURL, assetDetail: id => assetDetails.get(id),
   savePreferences: value => {
@@ -157,11 +168,11 @@ function safeURL(value, allowBlob = false) {
   return '';
 }
 
-// supports 只接受独立执行模块确认的可用能力，不依据按钮存在或缓存猜测成功。
+// supports 表示已接入的能力；账号离线不撤销本地编辑入口，实际联网操作单独报告错误。
 function supports(operation) {
   if (operation === 'music.search' && current().kind === 'video') return false;
   if (session.capabilities?.byKind?.[current().kind]?.disabledOperations?.includes(operation)) return false;
-  return session.connected === true && Array.isArray(session.capabilities?.operations) && session.capabilities.operations.includes(operation);
+  return Array.isArray(session.capabilities?.operations) && session.capabilities.operations.includes(operation);
 }
 
 // current 返回当前作品，所有编辑和提交都显式绑定这份草稿。
@@ -183,7 +194,15 @@ function notice(message = '', error = false) {
   fitWorkspace();
 }
 
-// fitWorkspace 使用页面自然滚动，提示和抽屉不会截断表单或底部操作。
+// musicPreviewNotice 将试听反馈放在选曲旁，避免滚动至扩展信息时看不到页首错误。
+function musicPreviewNotice(message = '') {
+  const node = $('music-preview-message');
+  node.textContent = message; node.hidden = !message;
+  musicPreviewMessageIdentity = message ? JSON.stringify([musicSearchIdentity(), current().music?.id, current().music?.name]) : '';
+  fitWorkspace();
+}
+
+// fitWorkspace 将高度交给 CSS 的视口两栏布局；提示变化不通过脚本重置滚动或预览位置。
 function fitWorkspace() {
   document.querySelector('.workspace').style.removeProperty('height');
 }
@@ -232,6 +251,7 @@ function renderDrafts() {
   $('draft-list').replaceChildren();
   $('draft-total').textContent = store.data.drafts.length;
   for (const draft of store.data.drafts) {
+    const row = element('div', 'draft-row'); row.dataset.draftId = draft.id;
     const button = element('button', 'draft-item');
     button.setAttribute('aria-current', String(draft.id === current().id));
     button.disabled = busy;
@@ -240,8 +260,48 @@ function renderDrafts() {
     text.append(element('small', '', `${draft.kind === 'image' ? '图文' : '视频'} · ${draft.assets.length} 项${draft.receipt ? ' · ' + receiptTitles[draft.receipt.status] : ''}`));
     button.append(element('span', 'draft-icon', draft.kind === 'image' ? '▧' : '▷'), text);
     button.onclick = () => { void switchDraft(draft.id); };
-    $('draft-list').append(button);
+    const remove = element('button', 'draft-delete', '删除'); remove.type = 'button'; remove.disabled = busy;
+    remove.setAttribute('aria-label', '删除草稿：' + (draft.name || draft.title || '未命名作品'));
+    remove.onclick = () => { void deleteDraft(draft.id); };
+    row.append(button, remove); $('draft-list').append(row);
   }
+}
+
+// deleteDraft 只移除本机作品；不调用图库或平台删除，也不清除发布防重记录。
+async function deleteDraft(id) {
+  if (busy) return;
+  const draft = store.data.drafts.find(item => item.id === id);
+  if (!draft) return;
+  const accepted = await confirmDialog({title: '删除这份本机草稿？', rows: [['草稿', draft.name || draft.title || '未命名作品']],
+    message: '只删除工作台中的这份草稿，不删除图库素材或平台作品。' + (draft.receipt ? '此操作不会撤销已提交的作品，发布记录仍会保留。' : ''),
+    submit: '删除草稿', danger: true});
+  if (!accepted || busy || !store.data.drafts.includes(draft)) return;
+  const index = store.data.drafts.indexOf(draft), wasCurrent = current() === draft, wasLast = store.data.drafts.length === 1;
+  const previousPrepared = prepared, previousFocus = focusID;
+  statusQueries.get(id)?.abort(); statusQueries.delete(id);
+  store.remove(id);
+  const replacement = current(), deletionRevision = store.revision;
+  if (wasCurrent) { prepared = null; focusID = null; stopMusic(); render(); }
+  else { renderDrafts(); renderSaveState(); }
+  if (!(await saveDraft(false))) {
+    // 写入失败只恢复被删目标；期间的新编辑和切稿不回滚。
+    if (!store.data.drafts.some(item => item.id === id)) store.data.drafts.splice(Math.min(index, store.data.drafts.length), 0, draft);
+    if (wasCurrent && store.revision === deletionRevision && current() === replacement) {
+      if (wasLast) store.data.drafts = store.data.drafts.filter(item => item !== replacement);
+      store.data.activeDraftId = id; prepared = previousPrepared; focusID = previousFocus;
+      render();
+    }
+    store.revision++;
+    renderDrafts(); renderSaveState();
+    notice('删除未保存，草稿已保留。' + storageError, true);
+    return;
+  }
+  notice('本机草稿已删除。');
+  if (wasCurrent && current() === replacement) {
+    await hydrateAssets(currentAssetIDs());
+    if (current() === replacement) { renderMedia(); renderCover(); renderPreview(); }
+  }
+  renderActions();
 }
 
 // switchDraft 切换前保留现有修改；准备结果只在其所属草稿中有效。
@@ -314,7 +374,7 @@ async function hydrateAssets(ids) {
       }
       if (!['image', 'video'].includes(data.mediaType)) continue;
       const asset = {id: data.id || id, name: data.name || data.fileName || id, kind: data.mediaType};
-      assetDetails.set(asset.id, {...asset, sizeBytes: data.sizeBytes, directoryName: directoryName(data.directoryPath), error: ''});
+      assetDetails.set(asset.id, {...asset, sizeBytes: data.sizeBytes, ...photoContext(data), error: ''});
       result.push(asset);
     } catch (error) {
       assetDetails.set(id, {id, error: error.message || '素材读取失败'});
@@ -372,7 +432,7 @@ async function removeImage(id) {
   setBusy(true, 'editing');
   try {
     draft.assets.splice(index, 1);
-    if (draft.cover?.type === 'asset' && draft.cover.assetId === id) draft.cover = null;
+    // 移出正文不删除图库图片；显式选定的封面继续作为独立图片保留。
     if (focusID === id) focusID = draft.assets[Math.min(index, draft.assets.length - 1)]?.id || null;
     markChanged(); renderMedia(); renderCover();
     if (!(await saveDraft(false))) {
@@ -408,10 +468,11 @@ function renderCoverSelection() {
   $('cover-picker-confirm').disabled = !coverSelection?.assetId || busy;
 }
 
-// chooseCover 只从当前图文素材中选择，确保封面身份满足本次发布素材契约。
+// chooseCover 提供本次图片快捷选择及独立图库入口；没有正文图片时直接打开图库。
 function chooseCover() {
   if (busy || connecting) return;
-  if (current().kind !== 'image' || !current().assets.some(asset => asset.kind === 'image')) return;
+  if (current().kind !== 'image') return;
+  if (!current().assets.some(asset => asset.kind === 'image')) { void chooseLibrary('cover'); return; }
   const cover = current().cover;
   coverSelection = {draftId: current().id, assetId: cover?.type === 'asset' && current().assets.some(asset => asset.id === cover.assetId) ? cover.assetId : null};
   renderCoverSelection(); $('cover-picker').showModal();
@@ -524,12 +585,13 @@ function renderCover() {
   $('clear-cover').hidden = !cover;
   $('crop-cover').hidden = !cover?.assetId || !!asset?.localOnly || draft.kind !== 'image';
   $('choose-frame').hidden = draft.kind !== 'video' || !supports('cover.frames');
-  $('choose-cover').disabled = busy || connecting || draft.kind !== 'image' || !draft.assets.some(asset => asset.kind === 'image');
+  $('choose-cover').disabled = busy || connecting || draft.kind !== 'image';
   $('crop-cover').disabled = busy;
 }
 
 // renderResources 显示所选配乐、地点和合集的明确身份，试听 URL 仅存在本次内存。
 function renderResources() {
+  if (musicPreviewMessageIdentity && musicPreviewMessageIdentity !== JSON.stringify([musicSearchIdentity(), current().music?.id, current().music?.name])) musicPreviewNotice();
   $('music-name').textContent = current().music?.name || '点击添加适合作品风格音乐';
   $('clear-music').hidden = !current().music;
   savedMusicPreview.render();
@@ -546,17 +608,88 @@ function fillOptions(id, options, fallback) {
     const label = element('label');
     const radio = element('input'); radio.type = 'radio'; radio.name = id; radio.value = option.value;
     radio.checked = option.value === value; radio.disabled = busy || option.disabled === true;
-    radio.onchange = () => { if (radio.checked && !busy) { current().settings[id] = radio.value; markChanged(); } };
+    radio.onchange = () => {
+      if (!radio.checked || busy) return;
+      if (id === 'visibility') { void changeVisibility(radio.value); return; }
+      current().settings[id] = radio.value; markChanged();
+    };
     radio.setAttribute('aria-label', option.label || option.value);
     const labelText = id === 'download' && ['allow', 'deny'].includes(option.value) ? (option.value === 'allow' ? '允许' : '不允许') : option.label || option.value;
     label.append(radio, document.createTextNode(labelText)); group.append(label);
   }
 }
 
+// collectionSettingsOwner 把异步确认绑定到发起草稿及账号，期间本地设置变化也不覆盖。
+function collectionSettingsOwner() {
+  const draft = current();
+  const scope = () => JSON.stringify([current().id, current().kind, session.activeProfileId || '', session.account?.id || '', current().settings.visibility, current().collection]);
+  const key = scope();
+  return () => current() === draft && scope() === key && !busy;
+}
+
+// visibilityLabel 将本地可见范围值转成确认窗口和行内说明使用的名称。
+function visibilityLabel(value) { return value === 'friends' ? '好友可见' : value === 'private' ? '仅自己可见' : '公开'; }
+
+// restoreVisibility 保留现有单选节点及焦点，未确认前表单始终反映已保存的草稿值。
+function restoreVisibility() {
+  for (const radio of $('visibility').querySelectorAll('input')) radio.checked = radio.value === current().settings.visibility;
+}
+
+// commitCollectionSettings 一次更新相关字段，并沿用草稿保存与上传准备失效流程。
+function commitCollectionSettings(collection, visibility) {
+  current().collection = collection;
+  current().settings.visibility = visibility;
+  markChanged(); renderResources(); renderSettings();
+}
+
+// selectCollection 只在加入合集会改变隐私时确认；清除合集始终是本地编辑。
+async function selectCollection(collection) {
+  if (busy || connecting) return;
+  const draft = current(), owns = collectionSettingsOwner();
+  if (collection && draft.settings.visibility !== 'public') {
+    const accepted = await confirmDialog({title: '设为公开并加入合集？',
+      message: `合集作品需要公开可见。当前为“${visibilityLabel(draft.settings.visibility)}”，加入“${collection.name}”会同时改为公开，所有人都可以看到。`,
+      submit: '设为公开并加入'});
+    if (!owns()) return;
+    if (!accepted) { $('search-collection').focus(); return; }
+  }
+  if (!owns()) return;
+  commitCollectionSettings(collection, collection ? 'public' : draft.settings.visibility);
+  $('search-collection').focus();
+}
+
+// changeVisibility 先还原浏览器的临时单选状态，确认后才同时移除不兼容的合集。
+async function changeVisibility(visibility) {
+  restoreVisibility();
+  if (busy || visibility === current().settings.visibility) return;
+  const draft = current(), owns = collectionSettingsOwner();
+  if (draft.collection && visibility !== 'public') {
+    const accepted = await confirmDialog({title: '移除合集并更改可见范围？',
+      message: `合集作品需要公开可见。改为“${visibilityLabel(visibility)}”会同时移除合集“${draft.collection.name}”。`,
+      submit: '移除合集并更改'});
+    if (!owns()) return;
+    if (!accepted) { $('visibility').querySelector('input:checked')?.focus(); return; }
+  }
+  if (!owns()) return;
+  commitCollectionSettings(visibility === 'public' ? draft.collection : null, visibility);
+  $('visibility').querySelector('input:checked')?.focus();
+}
+
+// renderCollectionVisibility 对旧冲突仅说明原因，由用户明确选择保留隐私或保留合集。
+function renderCollectionVisibility() {
+  const draft = current(), conflict = !!draft.collection && draft.settings.visibility !== 'public';
+  $('visibility-collection-note').hidden = !draft.collection || conflict;
+  $('visibility-collection-conflict').hidden = !conflict;
+  $('visibility-collection-reason').textContent = conflict ? `合集“${draft.collection.name}”需要公开可见，当前为“${visibilityLabel(draft.settings.visibility)}”。请选择一种处理方式，原设置暂时保留。` : '';
+  $('visibility-conflict-public').disabled = busy;
+  $('visibility-conflict-remove').disabled = busy;
+}
+
 // renderSettings 不以默认选项推断远端能力；最后由平台准备结果校验可发布性。
 function renderSettings() {
   fillOptions('visibility', session.capabilities?.options?.visibility, [{value: 'public', label: '公开'}, {value: 'friends', label: '好友可见'}, {value: 'private', label: '仅自己可见'}]);
   fillOptions('download', session.capabilities?.options?.download, [{value: 'allow', label: '允许'}, {value: 'deny', label: '不允许'}]);
+  renderCollectionVisibility();
   $('scheduled').checked = current().settings.publishTime === 'scheduled';
   $('immediate').checked = !$('scheduled').checked;
   $('scheduled-at').value = current().settings.scheduledAt;
@@ -568,8 +701,7 @@ function renderSettings() {
 // validationIssue 只做本机可确定的校验，不替平台猜测账号权限或发布时间范围。
 function validationIssue() {
   const draft = current();
-  if (!session.connected) return '请先登录抖音并核对账号';
-  if (!session.account?.id || !session.account?.name) return '尚未验证发布账号';
+  if (!session.account?.id) return '请先选择发布账号';
   if (!supports('publication.prepare')) return '当前连接尚未提供上传准备能力';
   if (!draft.assets.length) return '请先加入作品素材';
   if (draft.assets.some(asset => asset.localOnly)) return '预览文件需先加入图库，再带入作品';
@@ -579,7 +711,7 @@ function validationIssue() {
   if (draft.assets.some(asset => assetDetails.get(asset.id)?.error)) return '部分素材不可用，请重读或移除';
   if (draft.title.length > (session.capabilities?.limits?.titleLength || 20)) return '标题超过当前允许长度';
   if (draft.description.length > (session.capabilities?.limits?.descriptionLength || 1000)) return '描述超过当前允许长度';
-  if (new Set([...draft.topics.map(item => item.id), ...draft.activities.map(item => item.topic.id)]).size > 5) return '话题和官方活动合计最多添加 5 个';
+  if (new Set([...draft.topics.map(topicKey), ...draft.activities.map(item => topicKey(item.topic))]).size > 5) return '话题和官方活动合计最多添加 5 个';
   if (draft.settings.publishTime === 'scheduled') {
     const time = new Date(draft.settings.scheduledAt).getTime();
     if (!Number.isFinite(time) || time <= Date.now()) return '请选择未来的定时发布时间';
@@ -617,18 +749,25 @@ function renderActions() {
   const nativeAvailable = context.nativeCapabilities?.sessionVersion === 1;
   const multipleAccounts = context.nativeCapabilities?.sessionProfilesVersion === 1;
   $('account-select').disabled = connecting || busy || !multipleAccounts || !session.profiles.length;
+  accountSelector.render();
   $('import-session').disabled = connecting || busy || !nativeAvailable;
-  $('import-session').textContent = multipleAccounts && session.profiles.length ? '添加账号' : session.connected ? '重新登录' : '登录抖音';
+  $('import-session').textContent = multipleAccounts && session.profiles.length ? '添加账号' : '登录抖音';
+  const canRelogin = multipleAccounts && session.profiles.some(profile => profile.id === session.activeProfileId);
+  $('relogin-session').hidden = !canRelogin;
+  $('relogin-session').disabled = connecting || busy || !nativeAvailable || !canRelogin;
   $('clear-session').disabled = connecting || busy || !nativeAvailable || (!session.activeProfileId && !session.connected);
   for (const id of ['new-image', 'new-video', 'duplicate', 'delete-draft', 'mode-image', 'mode-video']) $(id).disabled = busy;
+  for (const node of document.querySelectorAll('.draft-item, .draft-delete')) node.disabled = busy;
   for (const node of document.querySelectorAll('[data-operation]')) {
-    const supported = supports(node.dataset.operation);
+    const supported = node.dataset.operation === 'topics.search' || supports(node.dataset.operation);
     node.disabled = busy || !supported;
     node.title = supported ? '' : session.connected ? '当前版本尚未支持此能力' : '请先登录抖音并核对账号';
   }
   $('open-ai').disabled = busy || !context.apiBaseURL;
-  $('refresh-publication').disabled = busy || !supports('publication.status');
-  $('status-shortcut').disabled = busy || !supports('publication.status');
+  const queryingStatus = statusQueries.has(current().id);
+  $('refresh-publication').disabled = busy || queryingStatus || !supports('publication.status');
+  $('status-shortcut').disabled = busy || queryingStatus || !supports('publication.status');
+  $('refresh-publication').textContent = $('status-shortcut').textContent = queryingStatus ? '查询中…' : '查询状态';
   $('status-shortcut').hidden = !current().receipt?.requestId;
   $('prepare').hidden = !!current().receipt?.requestId && current().receipt?.status !== 'failed';
   activities.render();
@@ -654,7 +793,7 @@ function renderConnection(message = '', {error = false} = {}) {
   renderAccounts();
   $('connection-dot').classList.toggle('online', session.connected && !!session.account?.id);
   $('connection-dot').classList.toggle('error', session.connected && !session.account?.id);
-  $('connection-label').textContent = connecting ? '正在检查…' : session.connected ? session.account?.name || '接口已接入 · 账号未验证' : context.nativeCapabilities?.sessionVersion === 1 ? '尚未验证账号' : '请更新 App';
+  $('connection-label').textContent = connecting ? '正在处理账号…' : session.account?.id ? `${session.account.name || '已选账号'}${session.connected ? '' : ' · 离线'}` : context.nativeCapabilities?.sessionVersion === 1 ? '请选择账号' : '请更新 App';
   $('connect').textContent = '检查会话';
   $('connection-banner').hidden = !message || (!error && session.connected && !!session.account?.id);
   $('connection-banner').classList.toggle('error', error);
@@ -678,7 +817,7 @@ function renderAccounts() {
   for (const profile of session.profiles) {
     const sameName = session.profiles.some(item => item.id !== profile.id && item.name === profile.name);
     const identity = sameName && profile.accountId ? ` · …${profile.accountId.slice(-4)}` : '';
-    const option = element('option', '', profile.name + identity + (profile.hasCookies ? '' : ' · 需重新登录'));
+    const option = element('option', '', profile.name + identity + (profile.browserSessionAvailable ? '' : ' · 需重新登录'));
     option.value = profile.id; select.append(option);
   }
   select.value = session.activeProfileId || '';
@@ -694,7 +833,6 @@ function acceptSession(value = {}) {
   if (Object.hasOwn(value, 'expiresAt')) session.expiresAt = value.expiresAt;
   if (Array.isArray(value.profiles)) session.profiles = value.profiles.filter(profile => typeof profile?.id === 'string' && typeof profile.name === 'string');
   if (Object.hasOwn(value, 'activeProfileId')) session.activeProfileId = value.activeProfileId || null;
-  if (!session.connected) { session.account = null; session.capabilities = {operations: []}; }
   if (previousAccount !== session.account?.id || previousProfile !== session.activeProfileId) {
     prepared = null;
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
@@ -704,27 +842,17 @@ function acceptSession(value = {}) {
   renderSettings(); renderResources(); renderConnection(value.message || '');
 }
 
-// refreshSession 合并状态事件触发的只读刷新，不创建自动发布或周期查询。
-async function refreshSession() {
-  if (sessionRefreshing) return sessionRefreshing;
-  sessionRefreshing = client.request('studio.session', {kind: current().kind}).then(acceptSession).catch(error => {
-    renderConnection(error.message || '账号信息读取失败，请刷新连接。', {error: true});
-  }).finally(() => { sessionRefreshing = null; });
-  return sessionRefreshing;
-}
-
 // checkInterface 只响应明确的检查、登录或清除动作，用户在官方窗口完成登录。
 async function checkInterface(action = 'check', profileId = null) {
   if (connecting || busy) return;
   connecting = true; renderConnection();
   try {
-    const result = await (action === 'import' ? client.importSession() : action === 'clear' ? client.clearSession() : action === 'select' ? client.selectAccount(profileId) : client.connect());
+    const result = await (action === 'import' ? client.importSession() : action === 'relogin' ? client.reloginSession() : action === 'clear' ? client.clearSession() : action === 'select' ? client.selectAccount(profileId) : client.connect());
     if (action !== 'check') prepared = null;
     acceptSession(result || {});
-    if (result?.connected && (!result.account || !result.capabilities)) await refreshSession();
     if ($('account-menu')) $('account-menu').open = false;
   } catch (error) { renderConnection(error.message || '会话操作未完成，请检查后重试。', {error: true}); }
-  finally { connecting = false; renderActions(); $('connect').disabled = busy; $('connection-label').textContent = session.connected ? session.account?.name || '接口已接入 · 账号未验证' : context.nativeCapabilities?.sessionVersion === 1 ? '尚未验证账号' : '请更新 App'; }
+  finally { connecting = false; renderActions(); $('connect').disabled = busy; $('connection-label').textContent = session.account?.id ? `${session.account.name || '已选账号'}${session.connected ? '' : ' · 离线'}` : context.nativeCapabilities?.sessionVersion === 1 ? '请选择账号' : '请更新 App'; }
 }
 
 // setBusy 锁定作品内容与草稿切换，防止上传期间生成混合内容快照。
@@ -737,19 +865,11 @@ function setBusy(value, kind = '') {
   renderActions();
 }
 
-// activity 只有收到明确进度时显示数值，不根据时间伪造百分比。
+// activity 展示本次总体说明，素材阶段由进度控件原位更新，不堆叠成重复上传记录。
 function activity(message, progress) {
   $('activity-panel').hidden = false;
   $('activity-message').textContent = message || '正在处理…';
-  const percent = Number.isFinite(progress?.percent) ? progress.percent : Number.isFinite(progress?.completed) && Number.isFinite(progress?.total) && progress.total > 0 ? progress.completed / progress.total * 100 : null;
-  $('activity-progress').hidden = percent === null;
-  if (percent !== null) $('activity-progress').value = Math.max(0, Math.min(100, percent));
-  if (progress?.assetId) {
-    const asset = current().assets.find(item => item.id === progress.assetId);
-    const row = element('div', '', `${asset?.name || '素材'} · ${progress.message || progress.phase || '处理中'}`);
-    $('activity-items').prepend(row);
-    while ($('activity-items').children.length > 20) $('activity-items').lastChild.remove();
-  }
+  preparationProgress.update(progress);
 }
 
 // preparePublication 上传不可变作品快照，只有明确 canPublish 才开放最终确认。
@@ -765,7 +885,7 @@ async function preparePublication() {
   prepared = null;
   operationController = new AbortController();
   setBusy(true, 'prepare');
-  $('activity-items').replaceChildren();
+  preparationProgress.reset();
   activity('正在上传素材并核对作品，完成后仍需确认发布。');
   notice();
   try {
@@ -779,10 +899,12 @@ async function preparePublication() {
     }
     prepared = {...result, draftId, signature};
     resources.invalidateRecommendations();
+    preparationProgress.finish('completed');
     activity('素材与作品检查完成。请核对账号，再点击发布。');
     notice('准备完成，尚未发布。');
   } catch (error) {
     const message = error.name === 'AbortError' ? '已停止等待准备结果。已完成的上传以执行模块任务记录为准，尚未发布。' : error.message || '准备失败，请重试。';
+    preparationProgress.finish(error.name === 'AbortError' ? 'cancelled' : 'failed');
     activity(message); notice(message, true);
     // 提交检查失败保留草稿并使用宿主原生提示；用户主动取消无需再次弹窗。
     if (error.name !== 'AbortError') window.alert(message);
@@ -855,28 +977,32 @@ async function publishPublication() {
 }
 
 // applyReceipt 只接受约定的终态；缺失或未知状态绝不按发布成功处理。
-function applyReceipt(result, requestId) {
+function applyReceipt(result, requestId, draft = current()) {
   const status = Object.hasOwn(receiptTitles, result?.status) ? result.status : 'unknown';
-  current().receipt = {
-    requestId, status, publicationId: typeof result?.publicationId === 'string' ? result.publicationId : current().receipt?.publicationId || '',
+  draft.receipt = {
+    requestId, status, publicationId: typeof result?.publicationId === 'string' ? result.publicationId : draft.receipt?.publicationId || '',
     message: typeof result?.message === 'string' ? result.message : '', updatedAt: new Date().toISOString(),
   };
   const url = safeURL(result?.url);
   if (url) publicationLinks.set(requestId, url);
+  if (draft.id !== current().id) return;
   activity(receiptTitles[status] + (result?.message ? '：' + result.message : ''));
   notice(status === 'published' ? '平台已确认作品发布成功。' : status === 'scheduled' ? '平台已接受定时发布。' : status === 'processing' ? '平台正在处理，请稍后查询状态。' : result?.message || '发布结果尚未确认，请查询状态。', ['failed', 'unknown'].includes(status));
 }
 
 // refreshPublication 仅查询已有提交，绝不自动重新上传或重新发布。
 async function refreshPublication() {
-  const receipt = current().receipt;
-  if (!receipt?.requestId || busy || !supports('publication.status')) return;
-  setBusy(true, 'status');
+  const draft = current(), receipt = draft.receipt;
+  if (!receipt?.requestId || busy || statusQueries.has(draft.id) || !supports('publication.status')) return;
+  const controller = new AbortController();
+  statusQueries.set(draft.id, controller); renderActions();
   try {
-    const result = await client.request('publication.status', {publicationId: receipt.publicationId || undefined, requestId: receipt.requestId});
-    applyReceipt(result, receipt.requestId); store.touch(); await saveDraft(false);
-  } catch (error) { notice(error.message || '状态查询失败，原提交记录已保留。', true); }
-  finally { setBusy(false); renderReceipt(); renderDrafts(); renderActions(); }
+    const result = await client.request('publication.status', {publicationId: receipt.publicationId || undefined, requestId: receipt.requestId}, {signal: controller.signal});
+    if (controller.signal.aborted || !store.data.drafts.includes(draft) || draft.receipt !== receipt) return;
+    applyReceipt(result, receipt.requestId, draft); store.touch(draft); await saveDraft(false);
+  } catch (error) {
+    if (!controller.signal.aborted && current().id === draft.id) notice(error.message || '状态查询失败，原提交记录已保留。', true);
+  } finally { statusQueries.delete(draft.id); renderReceipt(); renderDrafts(); renderActions(); }
 }
 
 // musicSearchIdentity 将分类和结果绑定当前作品类型及账号，避免关闭/切换后的迟到页面混入。
@@ -884,6 +1010,27 @@ function musicSearchIdentity() { return JSON.stringify([current().id, current().
 
 // ownsMusicSearch 同时检查抽屉实例和会话身份，不把旧分类查询当作新账号的目录。
 function ownsMusicSearch(state) { return searchState === state && $('search-dialog').open && state.identity === musicSearchIdentity(); }
+
+// 试听失败后仅由用户再次点击触发：刷新同一音乐 ID 的音源，不应用或替换作品配乐。
+async function refreshMusicPreview(item, {signal} = {}) {
+  const state = searchState;
+  const requireCurrent = () => {
+    if (signal?.aborted || state?.type !== 'music' || !ownsMusicSearch(state)) throw new DOMException('已取消旧音乐试听', 'AbortError');
+  };
+  requireCurrent();
+  const fresh = await client.request('music.resolve', {id: String(item.id), refreshSource: true}, {signal});
+  requireCurrent();
+  if (fresh?.id !== String(item.id)) throw Error('返回的音乐与当前曲目不一致，请重新读取音乐列表。');
+  const previewURL = safeURL(fresh.previewURL);
+  if (!previewURL) throw Error('这首音乐暂时没有可用音源，请稍后重试或选择其他音乐。');
+  const updated = {...item, ...fresh, previewURL};
+  const replace = values => values.map(value => value.id === updated.id ? {...value, ...updated} : value);
+  state.items = replace(state.items);
+  for (const page of state.musicPages.values()) page.items = replace(page.items);
+  musicCandidates.set(updated.id, updated);
+  resourcePreviews.set('music:' + updated.id, previewURL);
+  return updated;
+}
 
 // musicPageKey 按关键词或真实分类复合身份隔离分页，同 ID 的 recommend/rank 不共用游标。
 function musicPageKey(state, query) { return query ? 'query:' + query : state.category ? `category:${state.category.type}:${state.category.id}` : 'category:pending'; }
@@ -900,12 +1047,18 @@ function rememberMusicPage(state) {
 function renderMusicSearch(state) {
   if (!ownsMusicSearch(state)) return;
   musicCategories.render({items: state.categories, selected: state.category, searching: !!$('search-query').value.trim(), loading: state.categoriesLoading, error: state.categoriesError});
-  $('search-message').textContent = state.message || '';
+  renderSearchMessage(state);
   $('run-search').disabled = !!state.loading;
   $('search-more').disabled = !!state.loading;
   $('search-more').hidden = !state.hasMore && !state.failed;
   $('search-more').textContent = state.failed ? '重试' : '加载更多';
   drawSearchResults();
+}
+
+// renderSearchMessage 分开保留列表加载和选曲保存反馈，后台续页不会清掉正在保存或失败提示。
+function renderSearchMessage(state, message = state.message || '') {
+  state.message = message;
+  if (searchState === state) $('search-message').textContent = state.selecting ? '正在保存配乐…' : state.selectionError || message;
 }
 
 // activateMusicPage 切分类/关键词时取消旧查询并恢复该页独立游标，未读页才发新请求。
@@ -1028,7 +1181,7 @@ async function runSearch(more = false) {
   searchController?.abort(); searchController = new AbortController();
   if (!more) { state.items = []; state.cursor = null; state.hasMore = false; state.query = query; }
   state.failed = false; state.retryMore = more; state.loading = true; $('run-search').disabled = true; $('search-more').disabled = true;
-  $('search-message').textContent = '正在读取…';
+  renderSearchMessage(state, '正在读取…');
   try {
     const params = {query: state.query, cursor: more ? state.cursor : undefined, kind: current().kind};
     if (state.type === 'music' && !state.query) Object.assign(params, {categoryId: state.category.id, type: state.category.type});
@@ -1048,16 +1201,16 @@ async function runSearch(more = false) {
     state.cursor = nextCursor;
     state.hasMore = result.hasMore === true || (result.nextCursor !== undefined && result.nextCursor !== null && result.nextCursor !== '');
     if (state.hasMore && state.cursor === null) state.hasMore = false;
-    $('search-message').textContent = state.items.length ? (state.type === 'music' ? '' : `已显示 ${state.items.length} 项，选择后加入当前作品。`) : '没有找到匹配结果。';
+    renderSearchMessage(state, state.items.length ? (state.type === 'music' ? '' : `已显示 ${state.items.length} 项，选择后加入当前作品。`) : '没有找到匹配结果。');
     state.loaded = true;
     drawSearchResults();
   } catch (error) {
     if (generation !== searchGeneration || error.name === 'AbortError') return;
-    state.failed = true; $('search-message').textContent = error.message || '读取失败，请重试。';
+    state.failed = true; renderSearchMessage(state, error.message || '读取失败，请重试。');
   } finally {
     if (generation === searchGeneration) {
       state.loading = false; $('run-search').disabled = false; $('search-more').disabled = false; $('search-more').hidden = !state.hasMore && !state.failed; $('search-more').textContent = state.failed ? '重试' : '加载更多';
-      if (state.type === 'music') { state.message = $('search-message').textContent; rememberMusicPage(state); if (!state.failed) preloadMusicPage(state, generation); }
+      if (state.type === 'music') { rememberMusicPage(state); if (!state.failed) preloadMusicPage(state, generation); }
     }
   }
 }
@@ -1072,12 +1225,12 @@ function drawSearchResults() {
       const preview = safeURL(item.previewURL);
       if (preview) resourcePreviews.set('music:' + item.id, preview);
     }
-    musicDrawer.render({items: state.items, selectedId: current().music?.id || ''});
+    musicDrawer.render({items: state.items, selectedId: current().music?.id || '', selectingId: state.selectingId || ''});
     return;
   }
   $('search-results').replaceChildren();
   for (const item of state.items) {
-    const selected = ['topics', 'mentions'].includes(state.type) ? current()[state.type].some(value => value.id === item.id) : current()[state.type]?.id === item.id;
+    const selected = ['topics', 'mentions'].includes(state.type) ? current()[state.type].some(value => state.type === 'topics' ? topicKey(value) === topicKey(item) : value.id === item.id) : current()[state.type]?.id === item.id;
     const row = element('div', 'search-row' + (selected ? ' selected' : ''));
     if (state.type === 'music') { row.tabIndex = 0; row.setAttribute('aria-label', item.name); }
     const url = safeURL(item.thumbnailURL);
@@ -1103,14 +1256,49 @@ function drawSearchResults() {
   }
 }
 
+// rememberSelectedMusic 只提交候选 ID，音源与时长由平台模块从已核验结果保存；保留其他草稿引用。
+async function rememberSelectedMusic(item, {signal} = {}) {
+  const identity = musicSearchIdentity();
+  const requireCurrent = () => {
+    if (signal?.aborted) throw new DOMException('已取消选曲', 'AbortError');
+    if (identity !== musicSearchIdentity()) throw Error('作品或账号已变化，本次配乐未应用。');
+  };
+  // 复用在途保存，只在仍有未保存修改或失败时落盘；引用清理不得领先磁盘草稿。
+  await store.pending.catch(() => {});
+  requireCurrent();
+  if ((store.savedRevision < store.revision || storageError) && !(await saveDraft(false))) throw Error('草稿保存失败，原配乐已保留，请保存成功后重试。');
+  requireCurrent();
+  const keepIds = [...new Set([...store.data.drafts.map(draft => draft.music?.id).filter(Boolean), item.id])];
+  const selected = await client.request('music.select', {id: item.id, keepIds}, {signal});
+  requireCurrent();
+  if (selected?.id !== item.id) throw Error('保存的音乐与所选歌曲不一致，原配乐已保留。');
+  return {...item, ...selected};
+}
+
 // chooseResource 仅在用户点选后持久化身份；地点保留显式城市，封面文件不进入本机 JSON。
 async function chooseResource(item) {
   const state = searchState;
-  if (!state || state.draftId !== current().id || busy) return;
+  if (!state || state.draftId !== current().id || busy || state.selecting) return;
+  if (state.type === 'music') {
+    if (!ownsMusicSearch(state)) return;
+    state.selecting = true; state.selectingId = item.id; state.selectionError = '';
+    state.selectionController = new AbortController();
+    renderSearchMessage(state); drawSearchResults();
+    try {
+      item = await rememberSelectedMusic(item, {signal: state.selectionController.signal});
+      if (!ownsMusicSearch(state)) return;
+    } catch (error) {
+      if (ownsMusicSearch(state) && error.name !== 'AbortError') state.selectionError = error.message || '音乐资料未保存，请重试。';
+      return;
+    } finally {
+      state.selecting = false; state.selectingId = ''; state.selectionController = null;
+      if (ownsMusicSearch(state)) { renderSearchMessage(state); drawSearchResults(); }
+    }
+  }
   if (['topics', 'mentions'].includes(state.type)) {
     const value = entityValue(item);
     if (!value) return;
-    if (!current()[state.type].some(existing => existing.id === value.id)) current()[state.type].push(value);
+    if (!current()[state.type].some(existing => state.type === 'topics' ? topicKey(existing) === topicKey(value) : existing.id === value.id)) current()[state.type].push(value);
   } else if (state.type === 'frame') {
     if (!Number.isFinite(item.timeMs)) { $('search-message').textContent = '这项结果缺少有效的视频时间，无法选为封面。'; return; }
     current().cover = {type: 'frame', assetId: current().assets[0].id, id: item.id, timeMs: item.timeMs, name: item.name};
@@ -1120,7 +1308,16 @@ async function chooseResource(item) {
     if (state.type === 'location' && item.cityCode) Object.assign(current().location, {cityCode: item.cityCode, cityName: item.cityName});
   }
   markChanged(); renderResources(); drawSearchResults();
-  if (!['topics', 'mentions'].includes(state.type)) $('search-dialog').close();
+  if (!['topics', 'mentions'].includes(state.type)) {
+    if (state.type === 'music') {
+      const identity = musicSearchIdentity();
+      // close 的既有处理先停止抽屉试听，之后才给当前选曲保存内存音源，避免立即被清掉。
+      $('search-dialog').addEventListener('close', () => {
+        if (musicSearchIdentity() === identity) savedMusicPreview.prime(item);
+      }, {once: true});
+    }
+    $('search-dialog').close();
+  }
 }
 
 // stopMusic 在草稿切换时停止试听，不把试听当作作品已配乐成功。
@@ -1154,7 +1351,7 @@ function render() {
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
     if (renderedDraftId !== null) notice();
     $('activity-panel').hidden = true;
-    $('activity-items').replaceChildren();
+    preparationProgress.reset();
     renderedDraftId = draft.id;
   }
   $('draft-name').value = draft.name;
@@ -1197,21 +1394,28 @@ async function applyAIResult(value, selection) {
   if (selection.music && value.music && current().music) replacements.push('背景音乐');
   if (replacements.length && !(await confirmDialog({title: '应用 AI 建议？', message: `将替换当前${replacements.join('、')}。`, submit: '应用所选'}))) return false;
   if (busy || !aiAssistant.isCurrent(value)) throw Error('作品内容或账号已变化，本次建议未应用。');
+  const selectedMusic = selection.music && value.music ? await rememberSelectedMusic(value.music) : null;
+  if (busy || !aiAssistant.isCurrent(value)) throw Error('作品内容或账号已变化，本次建议未应用。');
   if (selection.copy) {
     current().title = value.title; current().description = value.description;
     resources.synchronizeDescription(value.description);
+    // 绑定编排器确定的品牌和拍照日期；已手选的同名平台话题保留原 ID，无需再搜索。
+    for (const topic of value.topics || []) {
+      if (!current().topics.some(existing => existing.name === topic.name)) current().topics.push({...topic});
+    }
   }
   if (selection.location && value.location) {
     const {id, name, cityCode, cityName} = value.location;
     current().location = {id, name, cityCode, cityName};
   }
   if (selection.music && value.music) {
-    const item = value.music;
+    const item = selectedMusic;
     current().music = entityValue(item);
     musicCandidates.set(item.id, {...item, description: item.author});
     const source = safeURL(item.previewURL);
     if (source) resourcePreviews.set('music:' + item.id, source);
     stopMusic();
+    savedMusicPreview.prime(item);
   }
   markChanged(); render(); return true;
 }
@@ -1219,6 +1423,7 @@ async function applyAIResult(value, selection) {
 // closeHost 等待本机保存确认；待发布请求不会被关闭动作自动取消或重发。
 async function closeHost(host = true) {
   if (busy) { notice('当前操作尚未结束，请等待结果后关闭。'); return; }
+  for (const controller of statusQueries.values()) controller.abort();
   if (!(await saveDraft(false))) { notice('草稿保存失败，页面已保留。请保存成功后再关闭。', true); return; }
   if (context.nativeUIAvailable) await window.webkit.messageHandlers.pluginUI.postMessage({op: 'close', host});
 }
@@ -1236,6 +1441,7 @@ function bindEvents() {
   $('choose-upload').onclick = $('add-library-media').onclick = () => { void chooseLibrary('media'); };
   $('connect').onclick = () => { void checkInterface(); };
   $('import-session').onclick = () => { void checkInterface('import'); };
+  $('relogin-session').onclick = () => { void checkInterface('relogin'); };
   $('clear-session').onclick = () => { void checkInterface('clear'); };
   $('account-select').onchange = event => { if (event.target.value) void checkInterface('select', event.target.value); };
   $('new-image').onclick = () => newDraft('image'); $('new-video').onclick = () => newDraft('video');
@@ -1248,24 +1454,28 @@ function bindEvents() {
   for (const id of ['title', 'description']) $(id).oninput = () => { current()[id] = $(id).value; markChanged(); };
   $('immediate').onchange = $('scheduled').onchange = () => { current().settings.publishTime = $('scheduled').checked ? 'scheduled' : 'now'; renderSettings(); markChanged(); };
   $('scheduled-at').onchange = () => { current().settings.scheduledAt = $('scheduled-at').value; markChanged(); };
+  $('visibility-conflict-public').onclick = () => {
+    if (!busy && current().collection && current().settings.visibility !== 'public') commitCollectionSettings(current().collection, 'public');
+  };
+  $('visibility-conflict-remove').onclick = () => {
+    if (!busy && current().collection && current().settings.visibility !== 'public') commitCollectionSettings(null, current().settings.visibility);
+  };
   $('import-host').onclick = () => { void chooseLibrary('media'); };
   $('preview-files').onchange = event => { void previewFiles(event.target.files || []); event.target.value = ''; };
   $('duplicate').onclick = () => { try { store.copy(); prepared = null; focusID = null; render(); void saveDraft(false); } catch (error) { notice(error.message, true); } };
-  $('delete-draft').onclick = async () => {
-    const id = current().id;
-    if (await confirmDialog({title: '删除当前本机草稿？', message: '只删除工作台中的这份草稿，不删除图库素材，也不删除已经发布的作品。', submit: '删除草稿', danger: true})) {
-      store.remove(id); prepared = null; focusID = null; stopMusic(); render(); await saveDraft(false);
-    }
-  };
+  $('delete-draft').onclick = () => { void deleteDraft(current().id); };
   for (const type of ['music']) $('search-' + type).onclick = () => { void openSearch(type); };
   for (const type of ['music']) $('clear-' + type).onclick = () => { current()[type] = null; if (type === 'music') stopMusic(); markChanged(); renderResources(); };
   $('choose-cover').onclick = chooseCover;
+  $('cover-picker-library').onclick = () => { $('cover-picker').close(); void chooseLibrary('cover'); };
   $('cover-picker-close').onclick = $('cover-picker-cancel').onclick = () => $('cover-picker').close();
   $('cover-picker').onclose = () => { if (!$('cover-picker').open) coverSelection = null; };
   $('cover-picker-confirm').onclick = () => { void confirmCoverSelection(); };
   $('choose-frame').onclick = () => { void openSearch('frame'); };
   $('crop-cover').onclick = () => { void cropCover(); };
   $('clear-cover').onclick = () => { current().cover = null; markChanged(); renderCover(); };
+  for (const id of ['preview-music', 'preview-music-icon']) $(id).addEventListener('click', () => musicPreviewNotice(), {capture: true});
+  $('music-player').addEventListener('playing', () => musicPreviewNotice());
   $('search-form').onsubmit = event => { event.preventDefault(); void runSearch(false); };
   $('search-query').oninput = () => {
     const state = searchState;
@@ -1277,13 +1487,14 @@ function bindEvents() {
   $('search-results').onscroll = event => { const node = event.currentTarget; if (searchState?.hasMore && !searchState.loading && !searchState.failed && node.scrollHeight - node.scrollTop - node.clientHeight < node.clientHeight) void runSearch(true); };
   $('search-more').onclick = () => { void runSearch(searchState?.failed ? searchState.retryMore : true); };
   $('search-close').onclick = $('search-done').onclick = () => $('search-dialog').close();
-  $('search-dialog').onclose = () => { clearTimeout(musicSearchTimer); searchController?.abort(); searchState?.categoryController?.abort(); searchGeneration += 1; if (searchState?.type === 'music') stopMusic(); searchState = null; };
+  $('search-dialog').onclose = () => { clearTimeout(musicSearchTimer); searchController?.abort(); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchGeneration += 1; if (searchState?.type === 'music') stopMusic(); searchState = null; };
   $('cancel-operation').onclick = () => operationController?.abort();
   $('open-ai').onclick = () => aiPanel.open();
   window.addEventListener('resize', fitWorkspace);
+  window.addEventListener('pagehide', () => accountSelector.dispose());
   window.addEventListener('luma:close-request', event => { event.preventDefault(); void closeHost(true); });
   window.addEventListener('beforeunload', event => { if (busy || storageError || store.savedRevision < store.revision) { event.preventDefault(); event.returnValue = ''; } });
-  window.addEventListener('pagehide', () => { savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); activities.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
+  window.addEventListener('pagehide', () => { for (const controller of statusQueries.values()) controller.abort(); savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); activities.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
 }
 
 // start 加载当前草稿与素材，不在初始化时启动执行模块或发送平台请求。
@@ -1291,12 +1502,8 @@ async function start() {
   bindEvents(); render(); renderConnection();
   // v1 关联文案迁入正文后先落盘，失败沿用草稿保存错误与重试机制。
   if (store.revision > store.savedRevision) await saveDraft(false);
-  client.onStatus(value => {
-    const hadFullSession = !!value?.account && !!value?.capabilities;
-    acceptSession(value || {});
-    if (value?.connected && !hadFullSession) void refreshSession();
-  });
-  // 只读取本机账号档案填充下拉，不在打开工作台时请求平台或自动登录。
+  client.onStatus(value => acceptSession(value || {}));
+  // 账号展示从本机档案恢复，不附带平台身份查询或自动登录；各资源按页面需要加载。
   if (context.nativeCapabilities?.sessionProfilesVersion === 1) {
     try { acceptSession(await client.listAccounts()); }
     catch (error) { renderConnection(error.message || '已登录账号读取失败，请检查会话。', {error: true}); }

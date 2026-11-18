@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const output = join(homedir(), 'Desktop', 'app', '抖音发布工作台实验版');
+const output = join(homedir(), 'Desktop', 'app', '抖音发布工作台');
 const markerName = '.publisher-lab-artifacts.json';
 const allowedExtensions = new Set(['.js', '.json', '.html', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff', '.woff2']);
 const blockedDirectories = new Set(['tests', 'docs', 'node_modules', 'codex-service', 'captures', 'logs']);
@@ -45,7 +45,7 @@ export async function collectRuntimeFiles(directory, entries, blocked = []) {
     const absolute = resolve(base, name), file = relative(base, absolute).split(sep).join('/');
     if (!file || file.startsWith('../') || file === '..' || name.startsWith('/')) throw Error(`运行资源越出插件目录：${name}`);
     if (found.has(file)) continue;
-    if (denied.has(file)) throw Error(`实验版仍引用旧接管模块，请完成新流程接入后打包：${file}`);
+    if (denied.has(file)) throw Error(`工作台仍引用旧接管模块，请完成新流程接入后打包：${file}`);
     if (file.split('/').some(part => part.startsWith('.') || blockedDirectories.has(part)) || ['package.json', 'package-lock.json'].includes(file)) throw Error(`非运行目录不能进入安装包：${file}`);
     if (!allowedExtensions.has(extname(file).toLowerCase())) throw Error(`不支持的运行资源：${file}`);
     let cursor = base;
@@ -69,7 +69,7 @@ export async function collectRuntimeFiles(directory, entries, blocked = []) {
 // runtimePlan 默认可分析浏览器参考依赖；AppOnly 构建完全不读取浏览器入口。
 export async function runtimePlan(projectRoot = root, {includeBrowser = true} = {}) {
   const app = JSON.parse(await readFile(join(projectRoot, 'app/manifest.json'), 'utf8'));
-  if (app.id !== 'com.lumaindex.douyin.studio') throw Error('实验版身份校验失败，已停止打包。');
+  if (app.id !== 'com.lumaindex.douyin.studio') throw Error('工作台身份校验失败，已停止打包。');
   const plan = {app, appFiles: await collectRuntimeFiles(join(projectRoot, 'app'), ['manifest.json', app.entry], oldEntries.app), browser: null, browserFiles: []};
   if (!includeBrowser) return plan;
   const browser = JSON.parse(await readFile(join(projectRoot, 'browser/manifest.json'), 'utf8'));
@@ -98,27 +98,27 @@ export async function writeAppArtifacts({projectRoot = root, destination, plan})
   const temporary = await mkdtemp(join(destination, '.app-only-package-'));
   try {
     await copyFiles(join(projectRoot, 'app'), temporary, plan.appFiles);
-    const archive = join(destination, '抖音发布工作台实验版.luma-plugin.zip');
+    const archive = join(destination, '抖音发布工作台.luma-plugin.zip');
     execFileSync('/usr/bin/zip', ['-q', archive, ...plan.appFiles], {cwd: temporary});
     await cp(join(projectRoot, 'README.md'), join(destination, '使用说明.md'));
   } finally { await rm(temporary, {recursive: true, force: true}); }
 }
 
-// build 在独立临时目录完成所有打包，成功后才替换带本项目标识的旧实验版产物。
+// build 在独立临时目录完成所有打包，成功后才替换带本项目标识的旧工作台产物。
 async function build() {
-  if (process.argv.length > 2) throw Error('此构建固定输出至 ~/Desktop/app/抖音发布工作台实验版，不接受覆盖其他目录。');
+  if (process.argv.length > 2) throw Error('此构建固定输出至 ~/Desktop/app/抖音发布工作台，不接受覆盖其他目录。');
   const plan = await runtimePlan(root, {includeBrowser: false});
   await mkdir(dirname(output), {recursive: true});
   let existing = false;
   try {
     const stat = await lstat(output);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('实验版交付位置不是独立目录，已停止打包。');
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('工作台交付位置不是独立目录，已停止打包。');
     const marker = JSON.parse(await readFile(join(output, markerName), 'utf8'));
-    if (marker.pluginId !== plan.app.id || marker.output !== output) throw Error('交付目录不属于本实验插件，已停止打包。');
+    if (marker.pluginId !== plan.app.id || marker.output !== output) throw Error('交付目录不属于本工作台，已停止打包。');
     existing = true;
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    try { await lstat(output); throw Error('交付目录已存在且缺少实验版标识，已停止打包。'); }
+    try { await lstat(output); throw Error('交付目录已存在且缺少工作台标识，已停止打包。'); }
     catch (check) { if (check.code !== 'ENOENT') throw check; }
   }
   const temporary = await mkdtemp(join(dirname(output), '.publisher-lab-build-'));
@@ -133,11 +133,11 @@ async function build() {
     catch (error) {
       if (existing) {
         try { await rename(previous, output); }
-        catch { preservePrevious = true; throw Error(`替换失败，旧实验版保留于：${previous}`); }
+        catch { preservePrevious = true; throw Error(`替换失败，旧工作台产物保留于：${previous}`); }
       }
       throw error;
     }
-    console.log(`实验版构建完成：${output}\nAppOnly：${plan.appFiles.length} 个插件运行文件；使用 App 宿主会话与请求能力。`);
+    console.log(`工作台构建完成：${output}\nAppOnly：${plan.appFiles.length} 个插件运行文件；使用 App 宿主会话与请求能力。`);
   } finally {
     if (!preservePrevious) await rm(temporary, {recursive: true, force: true});
   }

@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <!-- 本地插件不向媒体 CDN 发送宿主地址，避免跨源试听被来源校验拒绝。 -->
   <meta name="referrer" content="no-referrer">
-  <title>抖音发布工作台（实验版）</title>
+  <title>抖音发布工作台</title>
   <link rel="stylesheet" href="./studio.css">
+  <link rel="stylesheet" href="./studio-help.css">
+  <link rel="stylesheet" href="./studio-account-selector.css">
   <link rel="stylesheet" href="./studio-resources.css">
   <link rel="stylesheet" href="./studio-gallery.css">
   <link rel="stylesheet" href="./studio-music.css">
@@ -30,9 +32,10 @@
       <details id="account-menu" class="account-menu">
         <summary aria-label="账号与登录"><span id="connection-dot" class="status-dot"></span><span id="connection-label">尚未验证账号</span><span class="menu-chevron" aria-hidden="true"></span></summary>
         <div class="account-actions">
-          <label class="account-picker" for="account-select"><span>已登录账号</span><select id="account-select" aria-label="切换抖音账号"><option value="">暂无已登录账号</option></select></label>
+          <div class="account-picker"><span>已登录账号</span><select id="account-select" aria-label="切换抖音账号"><option value="">暂无已登录账号</option></select></div>
           <button id="connect">检查会话</button>
           <button id="import-session">登录抖音</button>
+          <button id="relogin-session" hidden>重新登录当前账号</button>
           <button id="clear-session">移除当前账号</button>
         </div>
       </details>
@@ -112,7 +115,7 @@
 
           <section class="panel official-card extended-panel">
             <div class="section-heading"><h2>扩展信息</h2></div>
-            <div class="resource-row music-field-row"><label>选择音乐</label><div class="resource-field music-field"><button id="preview-music-icon" class="music-field-icon" type="button" aria-label="试听已选音乐" disabled>♫</button><span id="music-name" class="muted">点击添加适合作品风格音乐</span><div class="inline-actions"><button id="preview-music" hidden>试听</button><button id="clear-music" class="text-button" hidden>移除</button><button id="search-music" data-operation="music.search">✎ 选择音乐</button></div></div></div>
+            <div class="resource-row music-field-row"><label>选择音乐</label><div class="resource-field music-field"><button id="preview-music-icon" aria-describedby="music-preview-message" class="music-field-icon" type="button" aria-label="试听已选音乐" disabled>♫</button><span id="music-name" class="muted">点击添加适合作品风格音乐</span><div class="inline-actions"><button id="preview-music" aria-describedby="music-preview-message" hidden>试听</button><button id="clear-music" class="text-button" hidden>移除</button><button id="search-music" data-operation="music.search">✎ 选择音乐</button></div></div><p id="music-preview-message" class="music-preview-message" role="alert" hidden></p></div>
             <audio id="music-player" controls hidden preload="none"></audio>
             <div class="resource-row location-field-row"><label>添加标签</label><div class="location-fields"><span class="location-kind">位置</span><div class="resource-anchor city-anchor"><button id="location-city" class="resource-select field-action" aria-label="选择城市" aria-haspopup="listbox" aria-expanded="false">选择城市</button><div id="city-popover" hidden></div></div><div class="resource-anchor" id="location-anchor"><button id="search-location" class="resource-select" data-operation="locations.search" aria-expanded="false"><span id="location-name">输入相关位置</span></button><div id="location-popover" class="resource-popover" hidden></div></div></div></div>
           </section>
@@ -120,7 +123,7 @@
           <section class="panel official-card settings-panel">
             <div class="section-heading"><h2>发布设置</h2></div>
             <div class="settings-grid">
-              <div class="setting-row"><span class="setting-label" id="visibility-label">谁可以看</span><div id="visibility" class="radio-options" role="radiogroup" aria-labelledby="visibility-label"></div></div>
+              <div class="setting-row"><span class="setting-label" id="visibility-label">谁可以看</span><div class="visibility-field"><div id="visibility" class="radio-options" role="radiogroup" aria-labelledby="visibility-label"></div><p id="visibility-collection-note" class="helper" hidden>合集作品需公开可见。</p><div id="visibility-collection-conflict" class="visibility-conflict" role="status" hidden><p id="visibility-collection-reason"></p><div class="inline-actions"><button id="visibility-conflict-public" type="button">设为公开并保留合集</button><button id="visibility-conflict-remove" type="button">移除合集并保持当前可见性</button></div></div></div></div>
               <div class="setting-row"><span class="setting-label" id="download-label">保存权限 <span class="setting-help" title="允许其他用户保存作品" aria-label="保存权限说明">?</span></span><div id="download" class="radio-options" role="radiogroup" aria-labelledby="download-label"></div></div>
               <div class="setting-row"><span class="setting-label" id="publish-time-label">发布时间</span><div class="radio-options" role="radiogroup" aria-labelledby="publish-time-label"><label><input id="immediate" type="radio" name="publish-time" value="now" checked>立即发布</label><label><input id="scheduled" type="radio" name="publish-time" value="scheduled">定时发布</label></div></div>
             </div>
@@ -137,14 +140,14 @@
         <div class="preview-heading"><strong>预览图文</strong><span>编辑预览</span></div>
         <div id="douyin-preview"></div>
         <section id="receipt-panel" class="receipt-panel" hidden><div class="section-heading"><h2 id="receipt-title">发布状态</h2></div><p id="receipt-message"></p><small id="receipt-id" class="muted"></small><div class="inline-actions"><button id="refresh-publication">查询发布状态</button><a id="publication-link" target="_blank" rel="noopener" hidden>查看作品 ↗</a></div></section>
-        <details class="capability-panel"><summary>当前账号可用能力</summary><p class="experiment-banner">实验版：图文与普通视频已接入，最终发布待实机验证。全景视频与文章暂未接入，实际发布状态以平台回执为准。</p><div id="capability-list">核对账号后读取</div></details>
+        <details class="capability-panel"><summary>当前账号可用能力</summary><p class="capability-note">图文与普通视频已接入。全景视频与文章暂未接入，实际发布状态以平台回执为准。</p><div id="capability-list">核对账号后读取</div></details>
       </aside>
     </main>
   </div>
 
   <dialog id="drafts-dialog" class="drafts-dialog" aria-label="本机草稿"><aside class="draft-sidebar"><div class="dialog-header"><h2>本机草稿</h2><button id="close-drafts" aria-label="关闭草稿">×</button></div><div class="new-drafts"><button id="new-image">＋ 新建图文</button><button id="new-video">＋ 新建视频</button></div><div id="draft-list" class="draft-list"></div><div class="sidebar-foot"><span class="local-dot"></span>草稿保存在本机，上传后仍需确认发布。</div></aside></dialog>
   <dialog id="search-dialog" class="search-dialog"><div class="dialog-header"><h2 id="search-heading">搜索</h2><button id="search-close" aria-label="关闭搜索">×</button></div><form id="search-form" class="search-bar"><input id="search-query" placeholder="输入关键词" autocomplete="off"><button id="run-search" class="primary" type="submit">搜索</button></form><p id="search-message" class="helper" role="status"></p><div id="music-tabs" class="music-tabs" hidden></div><div id="search-results" class="search-results"></div><button id="search-more" hidden>加载更多</button><div id="music-playback" hidden></div><p id="music-footnote" class="music-footnote" hidden>ⓘ 音乐封面以发布后播放页面展示为准</p><div class="dialog-footer"><button id="search-done">完成</button></div></dialog>
-  <dialog id="cover-picker" class="cover-picker" aria-labelledby="cover-picker-title"><div class="dialog-header"><h2 id="cover-picker-title">选择封面</h2><button id="cover-picker-close" aria-label="关闭封面选择">×</button></div><p class="helper">从当前图片中选择一张作为封面</p><div id="cover-picker-grid" class="cover-picker-grid" role="group" aria-label="当前作品图片"></div><div class="dialog-footer"><button id="cover-picker-cancel">取消</button><button id="cover-picker-confirm" class="primary" disabled>确定</button></div></dialog>
+  <dialog id="cover-picker" class="cover-picker" aria-labelledby="cover-picker-title"><div class="dialog-header"><h2 id="cover-picker-title">选择封面</h2><button id="cover-picker-close" aria-label="关闭封面选择">×</button></div><p class="helper">可选择当前图片，也可从图库单独选择封面</p><div id="cover-picker-grid" class="cover-picker-grid" role="group" aria-label="当前作品图片"></div><div class="dialog-footer"><button id="cover-picker-library">从图库选择</button><button id="cover-picker-cancel">取消</button><button id="cover-picker-confirm" class="primary" disabled>确定</button></div></dialog>
   <dialog id="confirm-dialog" class="confirm-dialog"><div class="dialog-header"><h2 id="confirm-title">确认操作</h2></div><div id="confirm-content"></div><div class="dialog-footer"><button id="confirm-cancel">取消</button><button id="confirm-submit" class="primary">确认</button></div></dialog>
   <dialog id="ai-dialog" class="ai-dialog">
     <div class="dialog-header"><h2>AI 助手</h2><button id="ai-close" aria-label="关闭 AI 助手">×</button></div>

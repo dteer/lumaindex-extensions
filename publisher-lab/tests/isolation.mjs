@@ -21,7 +21,7 @@ for (const [relative, expected] of Object.entries(baseline)) {
 const app = JSON.parse(await readFile(join(root, 'app/manifest.json'), 'utf8'));
 const browser = JSON.parse(await readFile(join(root, 'browser/manifest.json'), 'utf8'));
 assert.equal(app.id, 'com.lumaindex.douyin.studio');
-assert.equal(app.name, '抖音发布工作台（实验版）');
+assert.equal(app.name, '抖音发布工作台');
 assert.equal(browser.name, '有序图库发布工作台（实验版）');
 assert.equal(app.version, '0.1.0');
 assert.equal(browser.version, '0.1.0');
@@ -102,7 +102,7 @@ try {
 const appOnlyFixture = await mkdtemp(join(tmpdir(), 'publisher-lab-apponly-test-'));
 try {
   await mkdir(join(appOnlyFixture, 'app'));
-  await writeFile(join(appOnlyFixture, 'app/manifest.json'), JSON.stringify({id: 'com.lumaindex.douyin.studio', name: '实验版', version: '0.1.0', entry: 'index.html'}));
+  await writeFile(join(appOnlyFixture, 'app/manifest.json'), JSON.stringify({id: 'com.lumaindex.douyin.studio', name: '抖音发布工作台', version: '0.1.0', entry: 'index.html'}));
   await writeFile(join(appOnlyFixture, 'app/index.html'), '<p>界面预览</p>');
   await writeFile(join(appOnlyFixture, 'app/relay.html'), '<p>旧配对页不得打包</p>');
   await writeFile(join(appOnlyFixture, 'README.md'), '执行层未接入');
@@ -111,12 +111,12 @@ try {
   assert.deepEqual(plan.browserFiles, []);
   const destination = join(appOnlyFixture, 'output');
   await writeAppArtifacts({projectRoot: appOnlyFixture, destination, plan});
-  assert.deepEqual((await readdir(destination)).sort(), ['使用说明.md', '抖音发布工作台实验版.luma-plugin.zip'].sort());
-  const archived = execFileSync('/usr/bin/unzip', ['-Z1', join(destination, '抖音发布工作台实验版.luma-plugin.zip')], {encoding: 'utf8'}).trim().split('\n').sort();
+  assert.deepEqual((await readdir(destination)).sort(), ['使用说明.md', '抖音发布工作台.luma-plugin.zip'].sort());
+  const archived = execFileSync('/usr/bin/unzip', ['-Z1', join(destination, '抖音发布工作台.luma-plugin.zip')], {encoding: 'utf8'}).trim().split('\n').sort();
   assert.deepEqual(archived, ['index.html', 'manifest.json']);
   const actual = await runtimePlan(root, {includeBrowser: false});
   assert.equal(actual.appFiles.includes('relay.html'), false);
   assert.equal(actual.appFiles.some(file => file.startsWith('browser/')), false);
 } finally { await rm(appOnlyFixture, {recursive: true, force: true}); }
 
-console.log(`隔离验证通过：原插件 ${checked} 个运行文件未变；实验身份、旧页面拒绝、参考代码无原生页面注入；AppOnly 实际产物及入口依赖边界已确认。`);
+console.log(`隔离验证通过：原插件 ${checked} 个运行文件未变；工作台身份、旧页面拒绝、参考代码无原生页面注入；AppOnly 实际产物及入口依赖边界已确认。`);

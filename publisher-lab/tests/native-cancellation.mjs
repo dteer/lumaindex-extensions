@@ -12,11 +12,12 @@ const draft = {id: 'cancel-draft', name: '合成作品', kind: 'image', assets: 
   const controller = new AbortController(), calls = [];
   let releaseQuery, startQuery;
   const queried = new Promise(resolve => { startQuery = resolve; });
-  const client = createStudioClient({context: () => ({nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1}, apiBaseURL: origin + '/api/v1'}), post: async message => {
+  const client = createStudioClient({context: () => ({nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1}, apiBaseURL: origin + '/api/v1'}), post: async message => {
     calls.push(message);
-    if (message.op === 'session.status') return {ok: true, data: {hasCookies: true}};
+    if (message.op === 'session.status' || message.op === 'session.identify') return {ok: true, data: {browserSessionAvailable: true, activeProfileId: 'synthetic-profile', accountId: '123', name: '合成账号', hasCookies: true}};
+    if (message.op === 'session.list') return {ok: true, data: {items: [{id: 'synthetic-profile', accountId: '123', name: '合成账号', browserSessionAvailable: true}], activeProfileId: 'synthetic-profile', hasMore: false}};
     if (message.op === 'session.cancel') { releaseQuery({ok: false, error: {code: 'NETWORK_CANCELLED', message: '请求已停止'}}); return {ok: true, data: {cancelled: true}}; }
-    assert.equal(message.op, 'session.request');
+    assert.equal(message.op, 'browser.request');
     if (new URL(message.url).pathname.includes('challengesug')) {
       startQuery();
       return new Promise(resolve => { releaseQuery = resolve; });
@@ -75,7 +76,10 @@ console.log('native cancellation: import preservation, query reaches native canc
 // 素材预检失败后停止领取下一项，并等其他在途元数据读取结束，避免旧任务越过失败边界继续运行。
 {
   const originalFetch = globalThis.fetch, started = [], pending = new Map();
-  globalThis.fetch = async input => {
+  globalThis.fetch = async (input, options) => {
+    assert.equal(new URL(input).origin, origin);
+    assert.equal(options.referrer, undefined, '本机媒体读取不能附带平台页面来源');
+    assert.equal(options.headers, undefined, '平台业务默认头不能污染本机媒体 API');
     const id = new URL(input).pathname.split('/').at(-1);
     started.push(id);
     return new Promise((resolve, reject) => pending.set(id, {resolve, reject}));

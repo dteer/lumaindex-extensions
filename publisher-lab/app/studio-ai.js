@@ -1,4 +1,4 @@
-import {dateTag as todayTag, withDateTag} from './ai-context.js';
+import {dateTag, withPublicationTags} from './ai-context.js';
 
 // PLATFORM_ID 只接受实际平台查询返回的数字身份，AI 生成的名称不能自行变成发布身份。
 const PLATFORM_ID = /^\d{1,30}$/;
@@ -46,10 +46,10 @@ function sameBinding(left, right, includeAccount = true) {
   return left.draftId === right.draftId && left.revision === right.revision && (!includeAccount || left.accountId === right.accountId && left.profileId === right.profileId);
 }
 
-/** 验证分析输出并确定性追加日期，不从目录名或模型猜测中产生平台资源身份。 */
+/** 固定首行品牌话题和末尾拍照日期，并使用官网的 0 标记绑定名称话题。 */
 function analyzeResult(raw, tag) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw failure('AI_INVALID_RESULT', 'AI 返回的建议格式不正确，请重新生成。');
-  const title = checkedText(raw.title, 20), description = withDateTag(checkedText(raw.description, 1000), tag);
+  const title = checkedText(raw.title, 20), description = withPublicationTags(checkedText(raw.description, 1000), tag);
   let location = null;
   if (raw.location !== null && raw.location !== undefined) {
     location = {cityName: checkedText(raw.location.cityName, 80), query: checkedText(raw.location.query, 100), evidence: checkedText(raw.location.evidence, 500, {empty: true})};
@@ -57,7 +57,8 @@ function analyzeResult(raw, tag) {
   if (!raw.music || !Array.isArray(raw.music.queries) || raw.music.queries.length > 2) throw failure('AI_INVALID_RESULT', 'AI 返回的音乐线索格式不正确，请重新生成。');
   const queries = raw.music.queries.map(value => checkedText(value, 80));
   if (new Set(queries).size !== queries.length) throw failure('AI_INVALID_RESULT', 'AI 返回了重复的音乐线索，请重新生成。');
-  return {title, description, location, music: {queries, style: checkedText(raw.music.style, 300, {empty: true})}};
+  const topics = [{id: '0', name: '有序图库'}, ...(tag ? [{id: '0', name: tag.slice(1)}] : [])];
+  return {title, description, topics, location, music: {queries, style: checkedText(raw.music.style, 300, {empty: true})}};
 }
 
 /** 城市必须唯一命中插件静态表；“杭州”和“杭州市”可对应，但不模糊推断省份或行政代码。 */
@@ -111,7 +112,7 @@ function matchedItem(raw, candidates) {
 }
 
 /** 独立编排图片/文字分析、真实平台候选查询和 AI 候选匹配；不修改草稿，不上传或发布。 */
-export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch, loadCities, now = () => new Date(), uuid = () => crypto.randomUUID()} = {}) {
+export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch, loadCities, uuid = () => crypto.randomUUID()} = {}) {
   if (typeof getCurrent !== 'function' || typeof fetchImpl !== 'function' || typeof client?.request !== 'function') throw TypeError('AI 编排需要当前作品、本机请求和平台查询接口。');
   let generation = 0, active = null, latest = null, disposed = false;
 
@@ -171,7 +172,7 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
       return {location: null, music: null, warnings};
     }
     if (!job.binding.accountId) {
-      warn('resources', 'AI_ACCOUNT_REQUIRED', '登录并检查抖音账号后，可仅重试地点和音乐匹配；当前文案已保留。');
+      warn('resources', 'AI_ACCOUNT_REQUIRED', '请先选择已保存的抖音账号，再重试地点和音乐匹配；当前文案已保留。');
       return {location: null, music: null, warnings};
     }
     progress(job, 'resources', '正在查询抖音真实地点和音乐候选…');
@@ -196,7 +197,11 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
             const page = await client.request('music.search', {kind: 'image', query}, {signal: job.signal});
             check(job);
             for (const candidate of musicCandidates(page)) if (!seen.has(candidate.id) && candidates.music.length < CANDIDATE_LIMIT) { seen.add(candidate.id); candidates.music.push(candidate); }
-          } catch (error) { check(job); warn('music', 'AI_MUSIC_QUERY_FAILED', publicMessage(error, '音乐查询未完成，可仅重试资源匹配。')); }
+          } catch (error) {
+            check(job); warn('music', 'AI_MUSIC_QUERY_FAILED', publicMessage(error, '音乐查询未完成，可仅重试资源匹配。'));
+            // 账号问题交给用户处理，不再用下一个关键词重复请求；此前成功的候选和文案仍保留。
+            if (['SESSION_EXPIRED', 'ACCOUNT_CHANGED', 'SESSION_CHANGED', 'SESSION_IDENTITY_MISMATCH'].includes(error.code)) break;
+          }
           if (candidates.music.length >= CANDIDATE_LIMIT) break;
         }
         if (!candidates.music.length && !warnings.some(item => item.scope === 'music')) warn('music', 'AI_MUSIC_EMPTY', '未找到可用的真实音乐候选，可手动搜索音乐。');
@@ -224,7 +229,7 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
   /** 完成后只返回可检查建议；应用必须由界面显式决定，并先调用 isCurrent。 */
   function finish(input, analysis, matched, job) {
     check(job);
-    const result = {id: uuid(), binding: {...job.binding}, title: analysis.title, description: analysis.description, analysis: structuredClone(analysis), ...matched};
+    const result = {id: uuid(), binding: {...job.binding}, title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), analysis: structuredClone(analysis), ...matched};
     latest = {result, input, analysis, binding: {...job.binding}, generation: job.generation};
     return result;
   }
@@ -232,8 +237,8 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
   return {
     /** 分析仅发送用户显式选择的最多六个素材 ID，模型取图和提示词规则由本机服务管理。 */
     async generate(input, {signal, onProgress} = {}) {
-      const request = {baseURL: localBaseURL(input?.baseURL), prompt: typeof input?.prompt === 'string' ? input.prompt.trim() : '', context: typeof input?.context === 'string' ? input.context.trim() : '', assetIds: input?.assetIds ?? [], kind: input?.kind ?? 'image', dateTag: input?.dateTag ?? todayTag(now())};
-      if (request.prompt.length > 8000 || request.context.length > 12000 || !['image', 'video'].includes(request.kind) || !/^#\d{8}$/.test(request.dateTag) || !Array.isArray(request.assetIds) || request.assetIds.length > 6 || request.assetIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128) || new Set(request.assetIds).size !== request.assetIds.length || (!request.assetIds.length && !request.context)) throw failure('AI_INVALID_REQUEST', '请提供作品信息或勾选最多六张图片，并检查提示词与输入长度。');
+      const request = {baseURL: localBaseURL(input?.baseURL), prompt: typeof input?.prompt === 'string' ? input.prompt.trim() : '', context: typeof input?.context === 'string' ? input.context.trim() : '', assetIds: input?.assetIds ?? [], kind: input?.kind ?? 'image', dateTag: input?.dateTag ?? ''};
+      if (request.prompt.length > 8000 || request.context.length > 12000 || !['image', 'video'].includes(request.kind) || (typeof request.dateTag !== 'string' || request.dateTag !== '' && (!/^#\d{8}$/.test(request.dateTag) || dateTag(request.dateTag) !== request.dateTag)) || !Array.isArray(request.assetIds) || request.assetIds.length > 6 || request.assetIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128) || new Set(request.assetIds).size !== request.assetIds.length || (!request.assetIds.length && !request.context)) throw failure('AI_INVALID_REQUEST', '请提供作品信息或勾选最多六张图片，并检查提示词与输入长度。');
       request.assetIds = [...request.assetIds];
       const job = begin(currentBinding(getCurrent), signal, onProgress);
       try {

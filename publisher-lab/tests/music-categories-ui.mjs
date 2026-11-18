@@ -3,7 +3,7 @@ import {createServer} from 'node:http';
 import {readFile, mkdir} from 'node:fs/promises';
 import {resolve, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {chromium} from 'playwright';
+import {chromium, webkit} from 'playwright';
 
 // 分类整合回归运行真实页面/client/engine；平台和音频仅使用本地合成数据，不上传发布。
 const root = fileURLToPath(new URL('../app/', import.meta.url)), output = fileURLToPath(new URL('../output/playwright/', import.meta.url));
@@ -22,7 +22,8 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = 'http://127.0.0.1:' + server.address().port;
-const browser = await chromium.launch({headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
+const browserType = process.env.PLAYWRIGHT_BROWSER === 'webkit' ? webkit : chromium;
+const browser = await browserType.launch({headless: true, ...(browserType === chromium && process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
 try {
   const page = await browser.newPage({viewport: {width: 1240, height: 980}}), errors = [], audioRequests = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -32,37 +33,56 @@ try {
     const headers = await route.request().allHeaders();
     if (audio) audioRequests.push(headers);
     if (audio && headers.referer) { await route.fulfill({status: 403, contentType: 'text/html', body: 'referrer rejected'}); return; }
+    if (route.request().url().includes('/broken.wav')) { await route.fulfill({status: 200, contentType: 'audio/wav', body: 'invalid media fixture'}); return; }
     await route.fulfill({status: 200, contentType: audio ? 'audio/wav' : 'image/svg+xml', body: audio ? wav : picture});
   });
   await page.addInitScript(({origin}) => {
     const state = {version: 2, activeDraftId: 'music-draft', drafts: [{id: 'music-draft', name: '音乐分类回归', kind: 'image', assets: [{id: 'music-image', name: '音乐分类测试.jpg', kind: 'image'}], title: '分类回归', description: '', topics: [], mentions: [], activities: [], settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []}}]};
-    if (new URL(location.href).searchParams.has('savedMusic')) state.drafts[0].music = {id: '900001', name: '关键词搜索结果'};
-    const profile = {id: 'music-profile', accountId: '123', name: '音乐分类账号', hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = {};
-    window.__musicUI = {state, calls: [], failCatalog: new URL(location.href).searchParams.has('catalogFail'), failPage: '', holdPage: '', pending: [], cancelled: []};
+    if (new URL(location.href).searchParams.has('savedMusic')) state.drafts[0].music = {id: '100000', name: '推荐曲目1'};
+    const profile = {id: 'music-profile', accountId: '123', name: '音乐分类账号', browserSessionAvailable: true, hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = JSON.parse(localStorage.getItem('music-runtime-fixture') || '{}');
+    window.__musicUI = {state, calls: [], hostCalls: [], pendingMusicWrites: [], holdMusicWrite: false, failCatalog: new URL(location.href).searchParams.has('catalogFail'), failPage: '', holdPage: '', pending: [], cancelled: [], expired: false, expireOnInfo: new URL(location.href).searchParams.has('infoExpires'), brokenPreview: new URL(location.href).searchParams.has('brokenPreview')};
     const categories = [{category_id: '0', type: 'recommend', category_name: '推荐'}, {category_id: '0', type: 'rank', category_name: '热门榜'}, {category_id: '0', type: 'fav', category_name: '收藏'}, {category_id: '3', type: 'rank', category_name: '飙升榜'}, {category_id: '4', type: 'rank', category_name: '原创榜'}, {category_id: '5', type: 'category', category_name: '卡点'}, {category_id: '6', type: 'category', category_name: '轻音乐'}, {category_id: '7', type: 'category', category_name: '治愈'}];
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'music-categories-fixture', frontendState: state};
-    const status = () => ({hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
+    window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'music-categories-fixture', frontendState: state};
+    const assertInfoParams = url => { if (!/^\d+$/.test(url.searchParams.get('id') || '') || url.searchParams.has('music_id')) throw Error('Music info uses the verified id parameter'); };
+    const status = () => ({browserSessionAvailable: !window.__musicUI.expired, hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
-      if (message.op === 'persist') { window.__musicUI.state = structuredClone(message.value); return {ok: true}; }
+      window.__musicUI.hostCalls.push(message.op);
+      if (message.op === 'persist') { if (window.__musicUI.failDraftPersist) throw Error('合成草稿保存失败'); window.__musicUI.state = structuredClone(message.value); return {ok: true}; }
       if (['session.status', 'session.identify', 'session.select'].includes(message.op)) return {ok: true, data: status()};
       if (message.op === 'session.list') return {ok: true, data: {items: [profile], activeProfileId: profile.id, hasMore: false, nextOffset: null}};
-      if (message.op === 'state.get') return {ok: true, data: message.keys ? {[message.keys]: runtime[message.keys]} : runtime};
-      if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
+      if (message.op === 'state.get') return {ok: true, data: message.keys ? Object.fromEntries((Array.isArray(message.keys) ? message.keys : [message.keys]).map(key => [key, runtime[key]])) : runtime};
+      if (message.op === 'state.set') {
+        if (window.__musicUI.holdMusicWrite) await new Promise(resolve => window.__musicUI.pendingMusicWrites.push(resolve));
+        if (window.__musicUI.failMusicPersist) throw Error('合成音乐资料保存失败');
+        Object.assign(runtime, message.values); localStorage.setItem('music-runtime-fixture', JSON.stringify(runtime)); return {ok: true, data: {saved: true}};
+      }
       if (message.op === 'session.cancel') { window.__musicUI.cancelled.push(message.requestId); return {ok: true, data: {cancelled: true}}; }
-      if (message.op !== 'session.request') throw Error('Unexpected operation: ' + message.op);
+      if (message.op !== 'browser.request') throw Error('Unexpected operation: ' + message.op);
       const url = new URL(message.url); window.__musicUI.calls.push({path: url.pathname, params: Object.fromEntries(url.searchParams), method: message.method});
       let data;
       if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: '123', nickname: profile.name}};
       else if (url.pathname === '/web/api/media/activity/get/') data = {status_code: 0, activity_list: []};
       else if (url.pathname === '/aweme/v3/user_declaration/suggestion/') data = {status_code: 0, data: {block_type: 0, options: []}};
       else if (url.pathname === '/web/api/media/music/category') data = window.__musicUI.failCatalog ? {status_code: 1} : {status_code: 0, categories};
-      else if (url.pathname === '/web/api/media/music/list') {
+      else if (url.pathname === '/web/api/media/music/info/') {
+        assertInfoParams(url);
+        if (window.__musicUI.expireOnInfo) {
+          window.__musicUI.expired = true;
+          return {ok: false, error: {code: 'SESSION_EXPIRED', message: '账号离线，需要重新登录。'}};
+        }
+        // 官方详情只返回身份/名称/封面，音源和时长必须来自此前实际选曲记录。
+        data = {status_code: 0, music_id: url.searchParams.get('id'), music_name: '平台更新后的原声名称', music_author: '合成作者', cover_url: 'https://media.example.test/cover.svg'};
+      } else if (url.pathname === '/web/api/media/music/list') {
         const type = url.searchParams.get('type'), id = url.searchParams.get('category_id'), cursor = url.searchParams.get('cursor');
         const key = `${type}:${id}:${cursor}`, index = categories.findIndex(item => item.type === type && item.category_id === id);
         if (index < 0) throw Error('Synthetic category must match actual catalog');
         if (window.__musicUI.holdPage === key) await new Promise(resolve => window.__musicUI.pending.push(resolve));
         if (window.__musicUI.failPage === key) data = {status_code: 1};
         else data = {status_code: 0, songs: type === 'fav' ? [] : Array.from({length: id === '6' ? cursor === '0' ? 1 : cursor === '20' ? 0 : 20 : 20}, (_, item) => ({music_id: String(100000 + index * 10000 + Number(cursor) * 10 + item), music_name: `${categories[index].category_name}曲目${Number(cursor) + item + 1}`, music_author: '合成音乐人', duration: 30, user_count: 1234, cover_url: 'https://media.example.test/cover.svg', play_url: `https://media.example.test/song.wav?id=${index}-${item}`})), has_more: type !== 'fav' && (id === '6' ? cursor !== '40' : cursor === '0') ? 1 : 0, cursor: cursor === '0' ? '20' : cursor === '20' ? '40' : '60'};
+        if (window.__musicUI.brokenPreview && key === 'recommend:0:0' && data.songs?.length) {
+          const hasResolved = window.__musicUI.calls.some(call => call.path === '/web/api/media/music/info/');
+          data.songs[0].play_url = `https://media.example.test/${hasResolved ? 'refreshed' : 'broken'}.wav`;
+        }
       } else if (url.pathname === '/web/api/media/aweme/search/post/auth') data = {status_code: 0, signature: 'synthetic-category-search-grant'};
       else if (url.origin === 'https://tsearch.amemv.com' && url.pathname === '/openapi/aweme/v1/music/search/') data = {status_code: 0, music: [{id_str: '900001', title: '关键词搜索结果', author: '搜索作者', duration: 30, play_url: {url_list: ['https://media.example.test/search.wav']}}], has_more: 0};
       else throw Error('Unexpected platform endpoint: ' + url.pathname);
@@ -164,29 +184,129 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.studio-music-row').length === 20);
   assert.equal(await tab('推荐').getAttribute('aria-selected'), 'true');
   assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/category').length), 2);
+  await page.evaluate(() => {
+    window.__musicUI.failDraftPersist = true;
+    const title = document.querySelector('#title'); title.value = '待保存的作品修改'; title.dispatchEvent(new Event('input', {bubbles: true}));
+  });
   await page.locator('.studio-music-row').first().hover(); await page.locator('.studio-music-use').first().click();
+  await page.locator('#search-message').filter({hasText: '草稿保存失败'}).waitFor();
+  assert.equal(await page.evaluate(() => window.__musicUI.state.drafts[0].music?.id || null), null);
+  await page.evaluate(() => { window.__musicUI.failDraftPersist = false; window.__musicUI.failMusicPersist = true; });
+  await page.locator('.studio-music-row').first().hover(); await page.locator('.studio-music-use').first().click();
+  await page.locator('#search-message').filter({hasText: '保存失败'}).waitFor();
+  assert.equal(await page.evaluate(() => window.__musicUI.state.drafts[0].music?.id || null), null);
+  assert.equal(await page.locator('#search-dialog').evaluate(dialog => dialog.open), true);
+  await page.evaluate(() => { window.__musicUI.failMusicPersist = false; });
+  await page.locator('.studio-music-use').first().click();
   await page.waitForFunction(() => !document.querySelector('#search-dialog').open && window.__musicUI.state.drafts[0].music?.id === '100000');
   assert.equal(await page.locator('#music-player').evaluate(audio => audio.paused), true);
   assert.equal(await page.evaluate(() => window.__musicUI.calls.some(item => item.method !== 'GET')), false);
+  // 刚选中的列表歌曲可能不出现在关键词搜索中；试听直接复用真实候选，不按名称重搜。
+  const beforeSelectedPreview = await page.evaluate(() => window.__musicUI.calls.length);
+  await page.locator('#preview-music-icon').click();
+  await page.waitForFunction(() => !document.querySelector('#music-player').paused && document.querySelector('#music-player').readyState >= 2);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.length), beforeSelectedPreview);
+  assert.equal(await page.locator('#music-preview-message').isHidden(), true);
+  await page.locator('#preview-music').click();
   // 重新打开的真实编辑页只有音乐身份；无需先打开抽屉，点击即核验账号并获取音频。
   await page.setViewportSize({width: 1240, height: 980});
   await page.goto(origin + '/?savedMusic=1');
-  await page.locator('#music-name').filter({hasText: '关键词搜索结果'}).waitFor();
+  await page.locator('#music-name').filter({hasText: '推荐曲目1'}).waitFor();
   await page.waitForFunction(() => document.querySelector('#account-select')?.value === 'music-profile');
   assert.equal(await page.locator('#preview-music').isVisible(), true);
-  assert.equal(await page.evaluate(() => window.__musicUI.calls.length), 0, 'restoring selected music does not issue platform requests');
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(call => /\/music\/|\/user\/info\//.test(call.path)).length), 0, 'restoring selected music does not fetch music or recheck the account');
   await page.locator('#preview-music-icon').click();
   await page.waitForFunction(() => !document.querySelector('#music-player').paused && document.querySelector('#music-player').readyState >= 2);
   assert.equal(await page.locator('#preview-music').textContent(), '暂停');
   assert.equal(await page.locator('#search-dialog').evaluate(dialog => dialog.open), false);
-  const restoredSearch = await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/openapi/aweme/v1/music/search/'));
-  assert.equal(restoredSearch.length, 1); assert.equal(restoredSearch[0].params.keyword, '关键词搜索结果');
-  assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts[0].music), {id: '900001', name: '关键词搜索结果'});
+  const restoredInfo = await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/'));
+  assert.equal(restoredInfo.length, 1); assert.equal(restoredInfo[0].params.id, '100000'); assert.equal(restoredInfo[0].params.music_id, undefined);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.some(item => item.path === '/openapi/aweme/v1/music/search/')), false);
+  assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts[0].music), {id: '100000', name: '推荐曲目1'});
   await page.locator('#preview-music').click(); assert.equal(await page.locator('#music-player').evaluate(audio => audio.paused), true);
   await page.locator('#preview-music-icon').click();
   await page.waitForFunction(() => !document.querySelector('#music-player').paused);
-  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/openapi/aweme/v1/music/search/').length), 1);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/').length), 1);
   assert.ok(audioRequests.every(headers => !headers.referer));
+  // 详情请求明确返回会话错误，只在选曲旁显示错误，保留身份与草稿。
+  await page.goto(origin + '/?savedMusic=1&infoExpires=1');
+  await page.locator('#music-name').filter({hasText: '推荐曲目1'}).waitFor();
+  await page.waitForFunction(() => document.querySelector('#account-select')?.value === 'music-profile');
+  await page.locator('#preview-music').click();
+  await page.locator('#music-preview-message').filter({hasText: /需要重新登录|账号已变化/}).waitFor();
+  assert.equal(await page.locator('#music-player').evaluate(audio => audio.paused), true);
+  assert.equal(await page.locator('#preview-music').textContent(), '试听');
+  assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts[0].music), {id: '100000', name: '推荐曲目1'});
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.some(item => item.path === '/openapi/aweme/v1/music/search/')), false);
+  await page.locator('.extended-panel').screenshot({path: output + 'studio-saved-music-feedback.png'});
+  await page.setViewportSize({width: 420, height: 850});
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.locator('.extended-panel').screenshot({path: output + 'studio-saved-music-feedback-narrow.png'});
+
+  // 抽屉单曲真实解码失败后，仅下一次用户点击按原 ID 刷新；同页缓存不可带回失败源。
+  await page.setViewportSize({width: 1240, height: 980});
+  await page.goto(origin + '/?brokenPreview=1'); await open();
+  await page.waitForFunction(() => document.querySelectorAll('.studio-music-row').length === 20);
+  const draftBeforeRecovery = await page.evaluate(() => structuredClone(window.__musicUI.state.drafts));
+  await page.locator('.studio-music-listen').first().click();
+  await page.locator('.studio-music-playback-status').filter({hasText: '请点击重试'}).waitFor();
+  assert.equal(await page.locator('#music-player').evaluate(audio => audio.error?.code), 4);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(call => call.path === '/web/api/media/music/info/').length), 0);
+  assert.equal((await calls()).length, 1, 'a media failure must not start an automatic platform refresh');
+  await page.locator('.studio-music-player-cover').click();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('#music-player');
+    return audio.src.includes('/refreshed.wav') && !audio.paused && !audio.error && audio.currentTime > 0;
+  });
+  assert.equal(await page.locator('#music-player').evaluate(audio => audio.duration), 30);
+  assert.equal(await page.locator('.studio-music-playback-status').isHidden(), true);
+  const refreshInfo = await page.evaluate(() => window.__musicUI.calls.filter(call => call.path === '/web/api/media/music/info/'));
+  assert.equal(refreshInfo.length, 1); assert.equal(refreshInfo[0].params.id, '100000');
+  assert.equal((await calls()).filter(call => call.params.type === 'recommend' && call.params.cursor === '0').length, 2);
+  assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts), draftBeforeRecovery);
+  await page.locator('.studio-music-player-cover').click();
+  await tab('热门榜').click(); await page.locator('.studio-music-name').first().filter({hasText: '热门榜曲目1'}).waitFor();
+  await tab('推荐').click();
+  assert.equal(await page.locator('.studio-music-row').first().evaluate(row => row.classList.contains('is-current')), true);
+  const beforeCachedRetry = await page.evaluate(() => window.__musicUI.calls.length);
+  await page.locator('.studio-music-listen').first().click();
+  await page.waitForFunction(() => !document.querySelector('#music-player').paused);
+  assert.match(await page.locator('#music-player').getAttribute('src'), /\/refreshed\.wav$/);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.length), beforeCachedRetry);
+  assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts), draftBeforeRecovery);
+
+  // 使用只保存已读取候选；慢本地保存有可见反馈，续页不覆盖状态，完成才应用并关闭。
+  await page.goto(origin); await open();
+  await page.waitForFunction(() => document.querySelectorAll('.studio-music-row').length === 20);
+  await page.evaluate(() => { window.__musicUI.holdMusicWrite = true; });
+  const requestsBeforeUse = await page.evaluate(() => window.__musicUI.calls.length);
+  await page.locator('.studio-music-row').first().hover(); await page.locator('.studio-music-use').first().click();
+  await page.waitForFunction(() => window.__musicUI.pendingMusicWrites.length === 1);
+  assert.equal(await page.locator('.studio-music-use').first().textContent(), '保存中…');
+  assert.equal(await page.locator('.studio-music-use').first().getAttribute('aria-busy'), 'true');
+  assert.equal(await page.locator('.studio-music-use:enabled').count(), 0);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.length), requestsBeforeUse, 'using a candidate must not request the platform');
+  assert.equal(await page.evaluate(() => window.__musicUI.hostCalls.filter(op => op === 'persist').length), 0, 'a clean draft must not be written before using music');
+  assert.equal(await page.evaluate(() => window.__musicUI.state.drafts[0].music || null), null);
+  await nextPage(); await page.waitForFunction(() => document.querySelectorAll('.studio-music-row').length === 40);
+  assert.equal(await page.locator('#search-message').textContent(), '正在保存配乐…');
+  assert.equal(await page.locator('.studio-music-use:enabled').count(), 0);
+  await page.evaluate(() => { window.__musicUI.holdMusicWrite = false; window.__musicUI.pendingMusicWrites.splice(0).forEach(finish => finish()); });
+  await page.waitForFunction(() => !document.querySelector('#search-dialog').open && window.__musicUI.state.drafts[0].music?.id === '100000');
+  assert.equal(await page.evaluate(() => window.__musicUI.hostCalls.filter(op => op === 'persist').length), 1, 'the changed draft is saved once after selection');
+
+  // 关闭等待中的选曲后，迟到的本机保存回执不能改变草稿或重新打开弹窗。
+  await page.goto(origin); await open();
+  await page.waitForFunction(() => document.querySelectorAll('.studio-music-row').length === 20);
+  await page.evaluate(() => { window.__musicUI.holdMusicWrite = true; });
+  await page.locator('.studio-music-row').first().hover(); await page.locator('.studio-music-use').first().click();
+  await page.waitForFunction(() => window.__musicUI.pendingMusicWrites.length === 1);
+  await page.locator('#search-close').click();
+  await page.waitForFunction(() => !document.querySelector('#search-dialog').open);
+  await page.evaluate(() => { window.__musicUI.holdMusicWrite = false; window.__musicUI.pendingMusicWrites.splice(0).forEach(finish => finish()); });
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 500)));
+  assert.equal(await page.evaluate(() => window.__musicUI.state.drafts[0].music || null), null);
+  assert.equal(await page.evaluate(() => window.__musicUI.hostCalls.filter(op => op === 'persist').length), 0);
   assert.deepEqual(errors, []);
-  console.log('music categories UI: real compound tabs, scroll arrows, isolated pagination/cache, short/empty-page preloading, keyword return, cross-origin audio without Referer, playback continuity, cancellation, failed-page/catalog retry and selection passed');
+  console.log('music categories UI: local selection without remote or duplicate draft writes, visible pending state across pagination, close cancellation; failed audio same-ID refresh, cache replacement, saved music restoration, tabs and pagination passed');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

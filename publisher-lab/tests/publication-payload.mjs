@@ -190,6 +190,57 @@ const nativeBuild = (value, extra = {}) => buildNative({draft: value, images: [i
 }
 console.log('native payload: existing topic range binding, duplicate-name rejection and verified declaration serialization passed');
 
+// 官网明确绑定的名称话题使用数值0，范围照常提交；它不是现存平台身份，不进入challenges。
+{
+  const topics = [{id: '0', name: '20190701'}, {id: '111', name: '旅行'}, {id: '0', name: '新主题🙂'}];
+  const value = draft({title: '标题🙂', description: '拍摄日期\n#20190701 #旅行 #新主题🙂', topics, mentions: []});
+  const snapshot = structuredClone(value), common = nativeBuild(value).item.common;
+  const extras = JSON.parse(common.text_extra).filter(item => item.type === 1);
+  assert.deepEqual(extras.map(item => item.hashtag_id), [0, '111', 0], 'name-topic sentinel is a number; existing IDs remain exact strings');
+  assert.deepEqual(JSON.parse(common.challenges), ['111']);
+  assert.equal(common.hashtag_source, 'search/search/search');
+  assert.equal(common.text, '标题🙂。' + value.description);
+  for (const item of extras) {
+    assert.equal(common.text.slice(item.start, item.end), '#' + item.hashtag_name);
+    assert.equal(value.description.slice(item.caption_start, item.caption_end), '#' + item.hashtag_name);
+  }
+  assert.deepEqual(validateNative(value).topics, topics, 'distinct name topics sharing the official sentinel are separate choices');
+  const namesOnly = {...value, topics: topics.filter(item => item.id === '0')};
+  assert.deepEqual(validateNative(namesOnly, {operations: []}).topics, namesOnly.topics, 'explicit name topics do not require online topic search capability');
+  assert.throws(() => validateNative(value, {operations: []}), error => error.code === 'UNSUPPORTED_FEATURE', 'positive identities keep their search-capability requirement');
+  assert.deepEqual(value, snapshot);
+  const unbound = nativeBuild({...value, topics: []}).item.common;
+  assert.equal(unbound.text, common.text, 'unbound text is preserved without being silently promoted to a topic');
+  assert.equal(JSON.parse(unbound.text_extra).filter(item => item.type === 1).length, 0);
+  assert.equal(unbound.challenges, '[]');
+  const onlyNamed = nativeBuild({...value, title: '', topics: [{id: '0', name: '20190701'}]}).item.common;
+  assert.equal(onlyNamed.challenges, '[]');
+  assert.equal(JSON.parse(onlyNamed.text_extra)[0].hashtag_id, 0);
+  const video = buildNative({draft: {...value, kind: 'video', cover: null, assets: [{id: 'video-one', name: 'video.mp4', kind: 'video'}]},
+    video: {vid: 'video-id', width: 1080, height: 1920, duration: 20}, cover}).item.common;
+  assert.equal(video.caption, value.description);
+  assert.equal(video.challenges, '["111"]');
+  for (const item of JSON.parse(video.text_extra)) {
+    assert.equal(video.text.slice(item.start, item.end), '#' + item.hashtag_name);
+    assert.equal(video.caption.slice(item.caption_start, item.caption_end), '#' + item.hashtag_name);
+  }
+  for (const id of ['', undefined, null, 0, '00', '-1', 'name:20190701']) {
+    assert.throws(() => validateNative({...value, topics: [{id, name: '20190701'}]}), /未经确认/);
+  }
+  for (const name of ['', ' ', '#20190701', '新\n话题', 'x'.repeat(201)]) {
+    assert.throws(() => validateNative({...value, topics: [{id: '0', name}]}), error => error.code === 'INVALID_DRAFT');
+  }
+  assert.throws(() => validateNative({...value, topics: [{id: '0', name: '20190701'}, {id: '0', name: '20190701'}]}), /同一名称/);
+  assert.throws(() => validateNative({...value, topics: [{id: '0', name: '20190701'}, {id: '123', name: '20190701'}]}), /同一名称/);
+  assert.throws(() => validateNative({...value, topics: Array.from({length: 6}, (_, index) => ({id: '0', name: '主题' + index}))}), /最多添加 5/);
+  for (const key of ['music', 'location', 'collection']) {
+    assert.throws(() => validateNative({...value, [key]: {id: '0', name: '名称'}}), /未经确认/);
+  }
+  assert.throws(() => validateNative({...value, mentions: [{id: '0', name: '用户'}]}), /未经确认/);
+  assert.throws(() => validateNative({...value, activities: [{id: '701', name: '活动', topic: {id: '0', name: '活动话题'}}]}), /未经确认/);
+}
+console.log('native name topics: numeric zero text_extra, positive-ID-only challenges, mixed identities, UTF-16 image/video ranges and no implicit binding passed');
+
 // @ 与 # 都复用明确标记，同昵称不同用户按选择顺序绑定独立出现位置，不重复追加正文。
 {
   const value = draft({title: '🙂标题', description: '🙂 @作者🙂，\n@同名 与 @同名 #旅行',
@@ -255,3 +306,19 @@ console.log('native activities payload: merged topic identity, UTF-16 range, typ
   assert.throws(() => nativeBuild(value, {location: {id: '405', name: '测试地点'}}), error => error.code === 'PREPARATION_MISMATCH');
 }
 console.log('native location restoration: bounded city hints, immutable draft and verified platform-only publication metadata passed');
+
+// App 原生插件允许独立图库封面；它只改变 poster，不能添加或重排正文图片。
+for (const crop of [undefined, {x: 0.1, y: 0.2, width: 0.6, height: 0.7}]) {
+  const value = draft({cover: {type: 'asset', assetId: 'independent-library-cover', ...(crop ? {crop} : {})}});
+  const untouched = structuredClone(value);
+  const normalized = validateNative(value);
+  assert.deepEqual(normalized.cover, value.cover);
+  const result = buildNative({draft: value, images: [image], cover: {uri: 'tos-image/independent-cover.jpg'}});
+  assert.deepEqual(result.item.common.images, [{uri: image.uri, width: image.imageWidth, height: image.imageHeight}]);
+  assert.equal(result.item.cover.upload_poster, 'tos-image/independent-cover.jpg');
+  assert.deepEqual(value, untouched);
+}
+for (const assetId of ['https://example.test/cover.jpg', '/Users/private/cover.jpg', '../cover', '', null]) {
+  assert.throws(() => validateNative(draft({cover: {type: 'asset', assetId}})), error => error.code === 'INVALID_DRAFT');
+}
+console.log('native publication payload: independent local cover leaves body image count, order and draft unchanged');

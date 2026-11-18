@@ -3,7 +3,7 @@ import {createServer} from 'node:http';
 import {readFile, mkdir} from 'node:fs/promises';
 import {resolve, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {chromium} from 'playwright';
+import {chromium, webkit} from 'playwright';
 
 // 真实页面、客户端和编排模块配合合成宿主/AI 边界；绝不连接真实模型或上传发布。
 const root = fileURLToPath(new URL('../app/', import.meta.url));
@@ -16,7 +16,7 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/v1/ai/publish-assist') {
     const parts = []; for await (const part of request) parts.push(part);
     const body = JSON.parse(Buffer.concat(parts)); model.calls.push(body);
-    const result = body.phase === 'analyze' ? {title: model.title, description: '沿着湖边慢慢走，留住今天的光。', location: {cityName: '杭州', query: '西湖', evidence: '作品背景提供杭州'}, music: {queries: ['舒缓钢琴'], style: '轻柔舒缓'}}
+    const result = body.phase === 'analyze' ? {title: model.title, description: '沿着湖边慢慢走，留住今天的光。', location: {cityName: '杭州', query: '西湖', evidence: '作品背景提供杭州'}, music: {queries: [model.musicQuery || '舒缓钢琴'], style: '轻柔舒缓'}}
       : {location: body.candidates.locations[0] ? {id: body.candidates.locations[0].id, reason: '与作品背景一致'} : null, music: body.candidates.music[0] ? {id: body.candidates.music[0].id, reason: '适合画面和文字的轻缓节奏'} : null};
     const failed = model.fail === body.phase;
     const finish = () => {
@@ -31,7 +31,7 @@ const server = createServer(async (request, response) => {
   if (/^\/api\/v1\/assets\/fixture-\d+$/.test(url.pathname)) {
     const id = url.pathname.split('/').at(-1);
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({code: 0, data: {id, name: `杭州摄影${id.slice(8)}.jpg`, mediaType: 'image', sizeBytes: 1000, directoryPath: '/private/synthetic/杭州西湖'}})); return;
+    response.end(JSON.stringify({code: 0, data: {id, name: `杭州摄影${id.slice(8)}.jpg`, mediaType: 'image', sizeBytes: 1000, directoryPath: id === 'fixture-1' ? '/private/synthetic/2024-02-29 杭州西湖/修图' : id === 'fixture-2' ? '/private/synthetic/2021_7_6 合成旅拍' : '/private/synthetic/2023-01-01/无日期目录', shootDate: '2026-11-18T10:00:00Z', photoMetadata: id === 'fixture-1' ? JSON.stringify({rawFields: {'{Exif}.DateTimeOriginal': '2019:01:01 00:05:06', '{Exif}.OffsetTimeOriginal': '+14:00', '{GPS}.Latitude': 'synthetic-private'}}) : JSON.stringify({rawFields: {'{TIFF}.DateTime': '2026:11:18 10:00:00'}})}})); return;
   }
   const file = resolve(root, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
   if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
@@ -42,9 +42,12 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = 'http://127.0.0.1:' + server.address().port;
-const browser = await chromium.launch({headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
+const browserType = process.env.PLAYWRIGHT_BROWSER === 'webkit' ? webkit : chromium;
+const browser = await browserType.launch({headless: true, ...(browserType === chromium && process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
 try {
   const page = await browser.newPage({viewport: {width: 1280, height: 980}}), errors = [], alerts = [];
+  page.setDefaultTimeout(15000);
+  page.setDefaultNavigationTimeout(15000);
   page.on('pageerror', error => errors.push(error.message));
   // Playwright 接收真正的 window.alert 对话框，验证错误走原生 alert 而非悄悄吞掉。
   page.on('dialog', async dialog => { alerts.push({type: dialog.type(), message: dialog.message()}); await dialog.accept(); });
@@ -52,17 +55,17 @@ try {
   await page.addInitScript(({origin}) => {
     const initial = {version: 2, activeDraftId: 'ai-draft', aiPrompt: '请用自然简洁的中文创作', drafts: [{id: 'ai-draft', name: 'AI 回归作品', kind: 'image',
       assets: Array.from({length: 8}, (_, index) => ({id: `fixture-${index + 1}`, name: `杭州摄影${index + 1}.jpg`, kind: 'image'})),
-      title: '手写标题', description: '手写描述', aiContext: '杭州西湖散步', topics: [], mentions: [],
+      title: '手写标题', description: '手写描述 #旧话题', aiContext: '杭州西湖散步', topics: [{id: '8801', name: '旧话题'}], mentions: [],
       location: {id: '9001', name: '手动选择的位置', cityCode: '110100', cityName: '北京市'}, music: {id: '9002', name: '手动选择的音乐'},
       settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []}}]};
     const state = JSON.parse(sessionStorage.getItem('ai-ui-state') || JSON.stringify(initial));
-    const profile = {id: 'ai-profile', accountId: '123', name: '合成 AI 回归账号', hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = {};
+    const profile = {id: 'ai-profile', accountId: '123', name: '合成 AI 回归账号', browserSessionAvailable: true, hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = {};
     window.__aiUI = {state, requests: [], messages: []};
     // 仅在迟到测试中模拟传输忽略取消，让真实晚到 HTTP 回执检验界面的任务所有权。
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (input, options) => window.__aiUI.ignoreAIAbort && String(input).endsWith('/ai/publish-assist') ? nativeFetch(input, {...options, signal: undefined}) : nativeFetch(input, options);
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'ai-ui-fixture', frontendState: state};
-    const status = () => ({hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
+    window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'ai-ui-fixture', frontendState: state};
+    const status = () => ({browserSessionAvailable: true, hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
       window.__aiUI.messages.push(structuredClone(message));
       if (message.op === 'persist') { window.__aiUI.state = structuredClone(message.value); sessionStorage.setItem('ai-ui-state', JSON.stringify(message.value)); return {ok: true}; }
@@ -71,8 +74,9 @@ try {
       if (message.op === 'state.get') return {ok: true, data: message.keys ? {[message.keys]: runtime[message.keys]} : runtime};
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
       if (message.op === 'session.cancel') return {ok: true, data: {cancelled: true}};
-      if (message.op !== 'session.request') throw Error('Unexpected native AI operation: ' + message.op);
+      if (message.op !== 'browser.request') throw Error('Unexpected native AI operation: ' + message.op);
       const url = new URL(message.url); window.__aiUI.requests.push({url: message.url, method: message.method});
+      if (window.__aiUI.failMusic && url.origin === 'https://tsearch.amemv.com') return {ok: false, error: {code: 'SESSION_EXPIRED', message: '合成账号暂时离线，请手动处理后重试音乐查询。'}};
       let data;
       if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: '123', nickname: profile.name}};
       else if (url.pathname === '/web/api/media/activity/get/') data = {status_code: 0, activity_list: []};
@@ -104,9 +108,64 @@ try {
     await page.locator('#confirm-submit').click();
     await page.waitForFunction(() => !document.querySelector('#ai-dialog').open);
   }
+  // 日期话题是本地确定性绑定；只应用正文不能触发搜索或额外账号核验。
+  const lookupCounts = () => page.evaluate(() => ({
+    topics: window.__aiUI.requests.filter(item => new URL(item.url).pathname === '/aweme/v1/search/challengesug/').length,
+    account: window.__aiUI.requests.filter(item => new URL(item.url).pathname === '/web/api/media/user/info/').length,
+    session: window.__aiUI.messages.filter(item => ['session.status', 'session.list', 'session.identify', 'session.login'].includes(item.op)).length,
+  }));
+  // 使用真实滚轮验证背景与弹窗滚动隔离；不靠修改 scrollTop 模拟实际用户滚动结果。
+  async function verifyModalScrolling() {
+    await page.setViewportSize({width: 1280, height: 640});
+    const position = await page.evaluate(() => {
+      document.querySelector('.editor-column').scrollTop = 250;
+      document.querySelector('.preview-column').scrollTop = 30;
+      const position = {left: document.querySelector('.editor-column').scrollTop, right: document.querySelector('.preview-column').scrollTop};
+      document.querySelector('#open-ai').click();
+      return position;
+    });
+    const backgroundPosition = () => page.evaluate(() => ({left: document.querySelector('.editor-column').scrollTop, right: document.querySelector('.preview-column').scrollTop}));
+    assert.ok(position.left > 0, 'fixture must start at a nonzero editor position');
+    await page.locator('#ai-dialog[open]').waitFor();
+    await page.locator('#ai-use-images').check();
+    await page.locator('#ai-dialog details summary').click();
+    await page.evaluate(() => { document.querySelector('#ai-dialog').scrollTop = 0; });
+    const bounds = await page.locator('#ai-dialog').boundingBox();
+    assert.equal(await page.locator('#ai-dialog').evaluate(node => node.scrollHeight > node.clientHeight), true, 'AI content must be long enough to scroll independently');
+    await page.mouse.move(bounds.x + 10, bounds.y + Math.min(180, bounds.height / 2));
+    await page.mouse.wheel(0, 240);
+    await page.waitForFunction(() => document.querySelector('#ai-dialog').scrollTop > 0);
+    assert.deepEqual(await backgroundPosition(), position, 'scrolling AI content must leave both workspace columns fixed');
+    // 弹窗滚到末尾后继续滚、或在遮罩上滚动，都不能穿透背景。
+    await page.locator('#ai-dialog').evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await page.mouse.wheel(0, 300);
+    await page.mouse.move(5, 320); await page.mouse.wheel(0, 350);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await backgroundPosition(), position, 'modal boundary and backdrop wheels must not scroll either background column');
+    // 顶层确认框关闭后，下层 AI 仍是 modal，不能提前恢复背景滚动。
+    await page.locator('#confirm-dialog').evaluate(node => node.showModal());
+    await page.mouse.move(5, 320); await page.mouse.wheel(0, 350);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await backgroundPosition(), position);
+    await page.locator('#confirm-dialog').evaluate(node => node.close());
+    assert.deepEqual(await page.evaluate(() => ['.editor-column', '.preview-column'].map(selector => getComputedStyle(document.querySelector(selector)).overflowY)), ['hidden', 'hidden']);
+    await page.mouse.wheel(0, 350);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await backgroundPosition(), position, 'remaining modal must retain both background scroll locks');
+    await page.locator('#ai-dialog details').evaluate(node => { node.open = false; });
+    await page.locator('#ai-use-images').uncheck();
+    await page.locator('#ai-close').click();
+    await page.waitForFunction(() => !document.querySelector('dialog:modal'));
+    assert.deepEqual(await backgroundPosition(), position, 'closing all dialogs must preserve both original scroll positions');
+    const editor = await page.locator('.editor-column').boundingBox();
+    await page.mouse.move(editor.x + 8, editor.y + 120); await page.mouse.wheel(0, 300);
+    await page.waitForFunction(oldPosition => document.querySelector('.editor-column').scrollTop !== oldPosition, position.left);
+    await page.setViewportSize({width: 1280, height: 980});
+    await page.evaluate(() => { scrollTo(0, 0); for (const node of document.querySelectorAll('.editor-column, .preview-column')) node.scrollTop = 0; });
+  }
   await page.goto(origin);
   await page.waitForFunction(() => document.body.dataset.phase === 'editing' && document.querySelectorAll('#studio-gallery .studio-gallery-image').length === 8);
-  await connect(); await page.locator('#open-ai').click();
+  await connect(); await verifyModalScrolling(); await page.locator('#open-ai').click();
   assert.equal(await page.locator('#ai-use-images').isChecked(), false);
   assert.equal(await page.locator('#ai-image-section').isHidden(), true);
   await generate();
@@ -115,11 +174,30 @@ try {
   assert.equal(await page.locator('#ai-apply-music').isChecked(), false);
   assert.match(await page.locator('#ai-existing-location').textContent(), /手动选择的位置/);
   assert.match(await page.locator('#ai-existing-music').textContent(), /手动选择的音乐/);
+  const topicsBeforeApply = await page.evaluate(() => structuredClone(window.__aiUI.state.drafts[0].topics));
+  await page.locator('#ai-apply').click(); await page.locator('#confirm-dialog[open]').waitFor(); await page.locator('#confirm-cancel').click();
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), topicsBeforeApply, 'cancelling replacement must not bind the proposed date');
+  assert.equal(await page.locator('#description').inputValue(), '手写描述 #旧话题');
+  const lookupsBeforeApply = await lookupCounts();
   await applySelected();
   await page.waitForFunction(() => window.__aiUI.state.drafts[0].title === '湖边的好时光');
   assert.equal(await page.evaluate(() => window.__aiUI.state.drafts[0].location.id), '9001');
   assert.equal(await page.evaluate(() => window.__aiUI.state.drafts[0].music.id), '9002');
-  assert.match(await page.locator('#description').inputValue(), /\n#\d{8}$/);
+  assert.match(await page.locator('#description').inputValue(), /\n#20190101$/);
+  assert.match(await page.locator('#description').inputValue(), /^#有序图库\n/);
+  assert.equal(JSON.parse(model.calls.find(item => item.phase === 'analyze').context).dateTag, '#20190101');
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}, {id: '0', name: '20190101'}], 'brand and date must remain distinct zero-ID bindings and removed old-description topics must be cleared');
+  assert.deepEqual(await page.locator('.studio-description-entity[data-kind=topic]').allTextContents(), ['#有序图库', '#20190101']);
+  const dateMark = page.locator('.studio-description-entity[data-kind=topic]').filter({hasText: '#20190101'});
+  assert.equal(await dateMark.count(), 1);
+  assert.equal(await dateMark.getAttribute('data-entity-id'), '0');
+  assert.equal(await dateMark.evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(228, 240, 255)');
+  assert.deepEqual(await lookupCounts(), lookupsBeforeApply, 'copy-only application must not search topics or recheck the account');
+  await page.locator('.description-editor').screenshot({path: output + 'studio-ai-applied-topics.png'});
+  await page.reload(); await connect();
+  await page.waitForFunction(() => [...document.querySelectorAll('.studio-description-entity[data-entity-id="0"]')].some(node => node.textContent === '#20190101'));
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}, {id: '0', name: '20190101'}], 'reopening the real page must preserve both saved zero-ID bindings');
+  assert.deepEqual(await page.locator('.studio-description-entity[data-kind=topic]').allTextContents(), ['#有序图库', '#20190101']);
 
   // 开启后仅选第一张；圆圈与点击范围都在缩略图右下，图片主体点击不切换选择。
   await page.locator('#open-ai').click(); await page.locator('#ai-use-images').check();
@@ -144,7 +222,8 @@ try {
   await generate();
   const imageRequest = model.calls.filter(item => item.phase === 'analyze').at(-1);
   assert.deepEqual(imageRequest.assetIds, ['fixture-1', 'fixture-2', 'fixture-3', 'fixture-4', 'fixture-5', 'fixture-6']);
-  assert.equal(JSON.parse(imageRequest.context).directoryName, '杭州西湖');
+  assert.equal(JSON.parse(imageRequest.context).directoryName, '2024-02-29 杭州西湖');
+  assert.equal(JSON.parse(imageRequest.context).dateTag, '#20190101');
   assert.equal(imageRequest.context.includes('/private/synthetic'), false);
   await page.screenshot({path: output + 'studio-ai-suggestions.png'});
   await page.locator('#ai-result-music').scrollIntoViewIfNeeded();
@@ -154,9 +233,11 @@ try {
   await page.locator('#ai-apply-copy').uncheck();
   await page.locator('#ai-apply-location').check(); await page.locator('#ai-apply-music').check();
   const oldCopy = await page.locator('#title').inputValue();
+  const oldTopics = await page.evaluate(() => structuredClone(window.__aiUI.state.drafts[0].topics));
   await applySelected();
   await page.waitForFunction(() => window.__aiUI.state.drafts[0].music.id === '3302' && window.__aiUI.state.drafts[0].location.id === '4401');
   assert.equal(await page.locator('#title').inputValue(), oldCopy);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), oldTopics, 'resource-only application must preserve existing topic bindings');
   assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].location), {id: '4401', name: '西湖风景区', cityCode: '330100', cityName: '杭州市'});
   assert.equal(await page.evaluate(() => JSON.stringify(window.__aiUI.state).includes('https://media.example.test')), false);
 
@@ -188,6 +269,7 @@ try {
   model.fail = '';
 
   // 关闭或取消后晚到的后端应答不能重新显示结果；快速重新打开仍由新任务独占界面。
+  const topicsBeforeCancellation = await page.evaluate(() => structuredClone(window.__aiUI.state.drafts[0].topics));
   model.hold = 'analyze';
   let held = new Promise(resolve => { model.onHeld = resolve; });
   await page.evaluate(() => { window.__aiUI.ignoreAIAbort = true; });
@@ -214,15 +296,87 @@ try {
   model.hold = ''; for (const finish of model.pending.splice(0)) finish(); await late;
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.locator('#ai-result').isHidden(), true); assert.match(await page.locator('#ai-status').textContent(), /已取消/);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), topicsBeforeCancellation, 'cancelled or late generation must not modify draft topics');
+
+  // 日期跟随正文第一张图的顺序，与 AI 选中分析哪张无关；没有日期不向上越级或猜当天。
+  await page.locator('#ai-close').click();
+  await page.locator('#studio-gallery .studio-gallery-image').nth(1).focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForFunction(() => window.__aiUI.state.drafts[0].assets[0].id === 'fixture-2');
+  await page.locator('#open-ai').click();
+  await generate();
+  let firstImageContext = JSON.parse(model.calls.filter(item => item.phase === 'analyze').at(-1).context);
+  assert.equal(firstImageContext.directoryName, '2021_7_6 合成旅拍');
+  assert.equal(firstImageContext.dateTag, '#20210706');
+  assert.match(await page.locator('#ai-result-description').textContent(), /\n#20210706$/);
+  const oldDateCopy = await page.locator('#description').inputValue();
+  const oldDateTopics = await page.evaluate(() => structuredClone(window.__aiUI.state.drafts[0].topics));
+  await page.locator('#ai-apply-copy').uncheck(); await page.locator('#ai-apply-location').check(); await applySelected();
+  assert.equal(await page.locator('#description').inputValue(), oldDateCopy);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), oldDateTopics, 'not selecting copy must not bind the newly suggested different date');
+  await page.locator('#studio-gallery .studio-gallery-image').nth(2).focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForFunction(() => window.__aiUI.state.drafts[0].assets[1].id === 'fixture-3');
+  await page.locator('#studio-gallery .studio-gallery-image').nth(1).focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForFunction(() => window.__aiUI.state.drafts[0].assets[0].id === 'fixture-3');
+  await page.locator('#open-ai').click();
+  await generate();
+  firstImageContext = JSON.parse(model.calls.filter(item => item.phase === 'analyze').at(-1).context);
+  assert.deepEqual({directoryName: firstImageContext.directoryName, dateTag: firstImageContext.dateTag}, {directoryName: '无日期目录', dateTag: ''});
+  assert.doesNotMatch(await page.locator('#ai-result-description').textContent(), /#\d{8}/);
+  assert.match(await page.locator('#ai-result-description').textContent(), /^#有序图库\n/);
+  assert.equal(model.calls.some(call => call.context?.includes('/private/synthetic') || call.context?.includes('synthetic-private') || call.context?.includes('rawFields')), false);
 
   // 窄窗内控件仍可达，不产生横向溢出；末尾确认测试没有调用上传或发布接口。
   await page.setViewportSize({width: 560, height: 850}); await page.locator('#ai-use-images').check();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   const bounds = await page.locator('#ai-dialog').boundingBox(); assert.ok(bounds.width <= 560 && bounds.height <= 850);
   await page.screenshot({path: output + 'studio-ai-narrow.png'});
+
+  // 实际客户端收到账号资源错误后，已完成的文字与另一类成功资源仍能显示和本地应用。
+  model.title = '离线仍可编辑的文案'; model.musicQuery = '合成离线音乐查询';
+  const beforeOffline = await page.evaluate(() => {
+    window.__aiUI.failMusic = true;
+    return {accountReads: window.__aiUI.requests.filter(item => new URL(item.url).pathname === '/web/api/media/user/info/').length,
+      music: structuredClone(window.__aiUI.state.drafts[0].music), location: structuredClone(window.__aiUI.state.drafts[0].location)};
+  });
+  const analysesBeforeOffline = model.calls.filter(item => item.phase === 'analyze').length;
+  await generate();
+  assert.equal(await page.locator('#ai-result-title').textContent(), model.title);
+  assert.match(await page.locator('#ai-warnings').textContent(), /账号暂时离线.*手动处理/);
+  assert.equal(await page.locator('#ai-apply-location').isDisabled(), false, 'successful same-account location remains usable');
+  assert.equal(await page.locator('#ai-apply-music').isDisabled(), true, 'failed music lookup must not invent a replacement');
+  assert.equal(await page.locator('#ai-apply-copy').isChecked(), true);
+  await applySelected();
+  await page.waitForFunction(title => window.__aiUI.state.drafts[0].title === title, model.title);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}], 'copy without a deterministic date retains the brand only, without keeping removed date bindings or inventing today');
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].music), beforeOffline.music);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].location), beforeOffline.location);
+  assert.equal(model.calls.filter(item => item.phase === 'analyze').length, analysesBeforeOffline + 1);
+  assert.equal(await page.evaluate(() => window.__aiUI.requests.filter(item => new URL(item.url).pathname === '/web/api/media/user/info/').length), beforeOffline.accountReads, 'resource failure cannot silently recheck the account');
+  assert.equal(await page.evaluate(() => window.__aiUI.messages.some(item => item.op === 'session.login')), false);
+  assert.equal(await page.evaluate(() => window.__aiUI.requests.some(item => item.method !== 'GET' || /upload|create_v2/.test(item.url))), false);
+
+  // 重开带同名真实 ID 的合成草稿；AI 日期只能复用该绑定，不能替换成零 ID 或留下重复项。
+  await page.evaluate(() => {
+    const state = structuredClone(window.__aiUI.state), draft = state.drafts[0];
+    draft.assets.sort((a, b) => a.id === 'fixture-1' ? -1 : b.id === 'fixture-1' ? 1 : 0);
+    draft.description = '已有品牌 #有序图库 和日期 #20190101，以及将被移除的话题 #旧话题';
+    draft.topics = [{id: '99200', name: '有序图库'}, {id: '99201', name: '20190101'}, {id: '99202', name: '旧话题'}];
+    sessionStorage.setItem('ai-ui-state', JSON.stringify(state));
+  });
+  await page.reload(); await connect(); await page.locator('#open-ai').click(); await generate();
+  const positiveLookups = await lookupCounts();
+  await applySelected();
+  await page.waitForFunction(() => window.__aiUI.state.drafts[0].description.endsWith('#20190101') && window.__aiUI.state.drafts[0].topics.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.__aiUI.state.drafts[0].topics), [{id: '99200', name: '有序图库'}, {id: '99201', name: '20190101'}]);
+  assert.match(await page.locator('#description').inputValue(), /^#有序图库\n/);
+  assert.deepEqual(await page.locator('.studio-description-entity[data-kind=topic]').evaluateAll(nodes => nodes.map(node => ({text: node.textContent, id: node.dataset.entityId}))), [{text: '#有序图库', id: '99200'}, {text: '#20190101', id: '99201'}]);
+  assert.deepEqual(await lookupCounts(), positiveLookups, 'reusing an existing date ID must remain a local copy operation');
   assert.equal(await page.evaluate(() => window.__aiUI.requests.some(item => item.method !== 'GET' || /upload|create_v2/.test(item.url))), false);
   assert.deepEqual(errors, []);
-  console.log('AI UI: opt-in six-image selection, thumbnail controls, preference restore, explicit field application, native alerts, partial retry and cancellation races passed');
+  console.log('AI UI: deterministic date-topic marks and restore, existing ID preservation, local-only copy application, modal wheel isolation, image selection, preferences, explicit field application, partial retry and cancellation races passed');
 } finally {
   for (const finish of model.pending.splice(0)) finish();
   await browser.close(); await new Promise(resolve => server.close(resolve));

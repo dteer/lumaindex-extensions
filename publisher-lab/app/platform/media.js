@@ -12,10 +12,10 @@ export async function resolveAssets(job,origin,{signal}={}){
    const metadata=await fetch(`${origin}/api/v1/assets/${encodeURIComponent(source.id)}`,{credentials:'omit',redirect:'error',signal:combineSignals(signal,AbortSignal.timeout(15000))});
    const payload=await metadata.json();
    if(!metadata.ok||payload.code!==0)throw Error('读取素材信息失败，请检查图库。');
-   asset={id:(job.kind!=='video'&&payload.data.livePhoto?.imageAssetId)||source.id,name:payload.data.name||source.name,sizeBytes:payload.data.sizeBytes,revision:JSON.stringify([payload.data.sizeBytes,payload.data.modifiedAt,payload.data.sha256||null])};
+   asset={id:(job.kind!=='video'&&payload.data.livePhoto?.imageAssetId)||source.id,name:payload.data.name||source.name,kind:payload.data.mediaType,sizeBytes:payload.data.sizeBytes,revision:JSON.stringify([payload.data.sizeBytes,payload.data.modifiedAt,payload.data.sha256||null])};
    if(asset.id!==source.id){
     const response=await fetch(`${origin}/api/v1/assets/${encodeURIComponent(asset.id)}`,{credentials:'omit',redirect:'error',signal:combineSignals(signal,AbortSignal.timeout(15000))});
-    const detail=await response.json();if(!response.ok||detail.code!==0)throw Error('实况照片的静态图片不可用。');asset.name=detail.data.name;asset.sizeBytes=detail.data.sizeBytes;asset.revision=JSON.stringify([detail.data.sizeBytes,detail.data.modifiedAt,detail.data.sha256||null]);
+    const detail=await response.json();if(!response.ok||detail.code!==0)throw Error('实况照片的静态图片不可用。');asset.name=detail.data.name;asset.kind=detail.data.mediaType;asset.sizeBytes=detail.data.sizeBytes;asset.revision=JSON.stringify([detail.data.sizeBytes,detail.data.modifiedAt,detail.data.sha256||null]);
    }
   }
   return asset;

@@ -1,3 +1,5 @@
+import {topicKey} from './studio-state.js';
+
 /** 构造纯文本活动控件，平台标题和详情不作为 HTML 执行。 */
 function node(tag, className = '', text) {
   const element = document.createElement(tag);
@@ -117,8 +119,8 @@ export function mountActivities({container, current, identity, cacheScope = iden
       if (selectionTask !== task || !owns(view) || task.controller.signal.aborted || current() !== draft) return;
       if (blocked() || selectionSignature(draft) !== task.signature) throw Error('正文或话题已变化，本次未添加活动，请重新点击添加。');
       if (!validResolved(resolved) || resolved.id !== item.id) throw Error('活动话题身份无法确认，本次未添加，请重试。');
-      const topicIDs = new Set([...(draft.topics || []).map(value => value.id), ...activities.map(value => value.topic?.id)].filter(Boolean));
-      topicIDs.add(resolved.topic.id);
+      const topicIDs = new Set([...(draft.topics || []).filter(value => value.name !== resolved.topic.name).map(topicKey), ...activities.map(value => topicKey(value.topic))]);
+      topicIDs.add(topicKey(resolved.topic));
       if (topicIDs.size > 5) throw Error('话题和官方活动合计最多添加 5 个，请先移除一个话题。');
       const description = String(draft.description || '');
       const text = containsTopic(description, resolved.topic.name) ? description : description + (description && !/\s$/u.test(description) ? ' ' : '') + '#' + resolved.topic.name;

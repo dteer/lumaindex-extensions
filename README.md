@@ -6,7 +6,7 @@
 app/                  # App 内嵌插件页面
   codex-service/      # 独立 Codex 服务的安装说明与版本索引
 browser/              # 配套 Chrome 扩展
-publisher-lab/        # 独立实验工作台：App 原生会话、发布编排与界面
+publisher-lab/        # 独立发布工作台：App 原生会话、发布编排与界面
 versions/             # App 与浏览器扩展版本记录
 tests/                # 离线协议、编排与界面边界检查
 build.mjs             # 打包入口
@@ -16,7 +16,7 @@ README.md             # 统一使用入口
 | 能力 | App 端 | 浏览器端 | 安装与版本 |
 | --- | --- | --- | --- |
 | 抖音图文与视频发布 | [内嵌页面](app) | [Chrome 扩展](browser) | [1.0.0 版本](versions/1.0.0.md) |
-| 抖音发布工作台（实验版） | [独立 App 插件](publisher-lab) | 无 | [接入范围与安装说明](publisher-lab/README.md) |
+| 抖音发布工作台 | [独立 App 插件](publisher-lab) | 无 | [接入范围与安装说明](publisher-lab/README.md) |
 | Codex AI 中转 | [独立服务说明](app/codex-service) | 无 | [版本索引](app/codex-service/versions) |
 
 App 主程序见 [lumaindex-library](https://github.com/dteer/lumaindex-library)。Codex 目录目前只有安装说明，没有服务源码；其安装包不会被打进图文发布插件。
@@ -123,9 +123,9 @@ for f in tests/*.mjs; do node "$f" || exit 1; done
 
 ## 目录与版本约定
 
-原发布助手继续按 App、浏览器运行端维护代码；新实验工作台放在独立的 `publisher-lab/` 子项目，使用单独的插件 ID、测试与打包入口，互不覆盖。具体能力、配套版本和下载入口统一在本页说明。历史源码由 Git 标签保存，原助手安装包继续通过原 Release 分发。
+原发布助手继续按 App、浏览器运行端维护代码；发布工作台放在独立的 `publisher-lab/` 子项目，使用单独的插件 ID、测试与打包入口，互不覆盖。具体能力、配套版本和下载入口统一在本页说明。历史源码由 Git 标签保存，原助手安装包继续通过原 Release 分发。
 
-实验工作台在仓库根目录执行：
+发布工作台在仓库根目录执行：
 
 ```sh
 npm --prefix publisher-lab ci
@@ -133,7 +133,7 @@ npm --prefix publisher-lab test
 npm --prefix publisher-lab run build
 ```
 
-实验版构建输出到 `~/Desktop/app/抖音发布工作台实验版/`，仅包含 App 插件，不打包浏览器扩展或独立服务；真实上传和发布仍待实机验收。详见[实验工作台说明](publisher-lab/README.md)。
+工作台构建输出到 `~/Desktop/app/抖音发布工作台/`，仅包含 App 插件，不打包浏览器扩展或独立服务。详见[发布工作台说明](publisher-lab/README.md)。
 
 ## 城市与地点
 扩展信息中的标签位置先选择城市，再搜索真实地点。Chrome 扩展开启“启用 App 连接”后，未连接时由地点或合集查询显示手动连接入口；点击“连接 Chrome（手动打开）”完成配对，再重试查询。查询本身不会打开浏览器或抢占焦点。查询与地点带入均由本仓库 browser/ 中的扩展处理。扩展直接查询真实地点，并在提交草稿前重新确认候选；需要额外人工确认的地点，提示在原生页面完成选择。无需 AppleScript、Chrome Apple 事件设置或主 App 的浏览器自动化权限。

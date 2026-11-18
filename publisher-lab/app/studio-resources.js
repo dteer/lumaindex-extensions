@@ -26,8 +26,17 @@ function tokenIndex(text, token) {
   return -1;
 }
 
+// sameResource 新话题共用 ID 0，按名称区分；已有话题的同名候选也只绑定一次。
+function sameResource(kind, left, right) {
+  if (kind === 'topics') {
+    if (left.name === right.name) return true;
+    if (String(left.id) === '0' || String(right.id) === '0') return false;
+  }
+  return String(left.id) === String(right.id);
+}
+
 // mountResourceControls 维护当前账号/草稿的下拉查询、话题联想和声明选择；不上传或发布素材。
-export function mountResourceControls({current, supports, safeURL, request, identity, cacheScope = identity, blocked, changed}) {
+export function mountResourceControls({current, supports, safeURL, request, identity, cacheScope = identity, blocked, changed, selectCollection}) {
   const $ = id => document.getElementById(id);
   let contextKey = identity(), cachedScope = cacheScope(), active = null, timer = null, cityCode = '', cityName = '';
   let cityPicker = null;
@@ -35,6 +44,15 @@ export function mountResourceControls({current, supports, safeURL, request, iden
   let declarationItems = [], recommendationItems = [], recommendationKey = '', associationRange = null;
   let recommendationController = null;
   const description = $('description');
+  const clearButtons = new Map();
+  // 清除只编辑本机草稿，独立于读取平台选项的账号状态。
+  for (const [kind, label] of [['collection', '合集'], ['location', '位置']]) {
+    const field = $('search-' + kind), wrapper = node('div', 'resource-field-control');
+    const button = node('button', 'resource-clear', '×'); button.type = 'button';
+    button.setAttribute('aria-label', '清除' + label); button.title = '清除' + label;
+    button.onclick = () => select(kind, {id: ''});
+    field.before(wrapper); wrapper.append(field, button); clearButtons.set(kind, button);
+  }
 
   // close 取消当前选择器请求；已选资源与用户正文保持不变。
   function close() {
@@ -48,10 +66,12 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     $('association-results').hidden = true;
   }
 
-  // select 将真实平台身份绑定作品；话题与好友在光标位置替换完整 token。
+  // select 将话题名称或平台资源身份绑定作品；话题与好友在光标位置替换完整 token。
   function select(kind, item) {
     if (blocked() || !item || item.disabled) return;
     if (kind === 'topics' || kind === 'mentions') {
+      // 离线候选不能把已经绑定的真实同名话题降级为新话题。
+      if (kind === 'topics' && String(item.id) === '0') item = current().topics.find(value => value.name === item.name && String(value.id) !== '0') || item;
       const prefix = kind === 'topics' ? '#' : '@';
       const range = associationRange?.kind === kind ? associationRange : {start: description.selectionStart, end: description.selectionEnd};
       const text = description.value;
@@ -68,15 +88,29 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       description.setCustomValidity('');
       description.value = current().description = next;
       const caret = existing >= 0 ? existing + token.length : range.start + leading.length + token.length;
-      current()[kind] = current()[kind].filter(value => value.id !== String(item.id) && value.name !== item.name);
+      current()[kind] = current()[kind].filter(value => !sameResource(kind, value, item) && value.name !== item.name);
       current()[kind].push({id: String(item.id), name: item.name});
       close(); associationRange = null; changed();
       description.focus(); description.setSelectionRange(caret, caret);
       return;
     }
+    if (kind === 'collection' && selectCollection) {
+      close(); void selectCollection(item.id ? {id: String(item.id), name: item.name} : null);
+      return;
+    }
     if (kind === 'declaration') current().settings.declarations = item.id ? [String(item.id)] : [];
     else current()[kind] = item.id ? {id: String(item.id), name: item.name, ...(kind === 'location' ? {cityCode, cityName} : {})} : null;
     close(); changed();
+  }
+
+  // topicCandidates 为没有精确同名结果的关键词提供本地新话题，已有真实 ID 优先。
+  function topicCandidates(state) {
+    if (state.kind !== 'topics' || !state.query || state.query.length > 200 || /[#\u0000-\u001f\u007f]/u.test(state.query)) return state.items;
+    const items = [...state.items], bound = current().topics.find(item => item.name === state.query);
+    const exact = items.findIndex(item => item.name === state.query);
+    if (exact < 0) items.unshift(bound || {id: '0', name: state.query, viewCount: 0});
+    else if (String(items[exact].id) === '0' && bound && String(bound.id) !== '0') items[exact] = bound;
+    return items;
   }
 
   // renderItems 追加分页结果后更新下拉，未知枚举保持禁用并展示平台约束。
@@ -91,10 +125,10 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       }
       clear.onclick = () => select(state.kind, {id: ''}); state.list.append(clear);
     }
-    for (const item of state.items) {
+    for (const item of topicCandidates(state)) {
       const button = node('button', 'resource-option'); button.type = 'button';
       button.setAttribute('role', 'option'); button.disabled = !!item.disabled;
-      const selected = state.kind === 'declaration' ? current().settings.declarations.includes(item.id) : ['topics', 'mentions'].includes(state.kind) ? current()[state.kind].some(value => value.id === item.id) : current()[state.kind]?.id === item.id;
+      const selected = state.kind === 'declaration' ? current().settings.declarations.includes(item.id) : ['topics', 'mentions'].includes(state.kind) ? current()[state.kind].some(value => sameResource(state.kind, value, item)) : current()[state.kind]?.id === item.id;
       button.setAttribute('aria-selected', String(selected));
       const label = node('span', 'resource-option-label', (state.kind === 'topics' ? '#  ' : state.kind === 'mentions' ? '@  ' : '') + (item.name || item.label));
       if (item.description && item.description !== item.address && !['topics', 'mentions', 'collection'].includes(state.kind)) label.append(node('small', '', item.description));
@@ -145,6 +179,10 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     const query = state.input?.value.trim() || '';
     if (!more) { state.query = query; state.cursor = null; state.hasMore = false; state.items = []; renderItems(state); }
     try {
+      if (state.kind === 'topics' && !supports(state.operation)) {
+        state.message.textContent = state.query ? '当前无法读取在线话题，可直接添加输入的话题。' : '输入话题名称即可添加。';
+        return;
+      }
       const params = {kind: current().kind, draftId: current().id, query: state.query, cursor: more ? state.cursor : undefined};
       if (state.kind === 'location') {
         if (!cityCode) throw Error('请先选择城市，再搜索具体地点。');
@@ -155,15 +193,18 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       if (active !== state || key !== identity() || state.generation !== generation) return;
       if (!Array.isArray(result.items)) throw Error('结果不完整，请重试。');
       for (const entry of result.items) {
-        const item = {...entry, id: String(entry.id || ''), name: entry.name || entry.label};
-        if (item.id && item.name && !state.items.some(value => value.id === item.id)) state.items.push(item);
+        const item = {...entry, id: String(entry.id ?? ''), name: entry.name || entry.label};
+        if (!item.id || !item.name) continue;
+        const existing = state.items.findIndex(value => sameResource(state.kind, value, item));
+        if (existing < 0) state.items.push(item);
+        else if (state.kind === 'topics' && state.items[existing].id === '0' && item.id !== '0') state.items[existing] = item;
       }
       state.cursor = result.nextCursor ?? null;
       state.hasMore = result.hasMore !== false && state.cursor !== null && state.cursor !== '';
       if (state.hasMore && String(state.cursor) === String(params.cursor)) throw Error('列表分页位置未更新，请重新打开后重试。');
       state.required = result.required === true;
       if (state.kind === 'declaration') { declarationItems = state.items; render(); }
-      state.message.textContent = result.message || (state.items.length ? '' : '没有找到匹配结果');
+      state.message.textContent = result.message || (topicCandidates(state).length ? '' : '没有找到匹配结果');
       renderItems(state);
     } catch (error) {
       if (active !== state || key !== identity() || state.generation !== generation || error.name === 'AbortError') return;
@@ -183,13 +224,14 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     clearTimeout(timer); state.controller?.abort(); state.generation++; state.loading = false;
     // 新关键词立即废弃旧分页，避免防抖期间旧续页抢先占用 loading。
     state.hasMore = false; state.cursor = null; state.more.hidden = true; state.retry.hidden = true;
+    if (state.kind === 'topics') { state.query = state.input.value.trim(); state.items = []; renderItems(state); }
     timer = setTimeout(() => { void load(state); }, 250);
   }
 
   // open 创建贴近字段的搜索下拉，不把合集选择变成独立弹窗。
   function open(kind, query = '') {
     const operations = {collection: 'collections.list', declaration: 'declarations.list', location: 'locations.search', topics: 'topics.search', mentions: 'users.search'};
-    if (blocked() || !supports(operations[kind])) return;
+    if (blocked() || (kind !== 'topics' && !supports(operations[kind]))) return;
     close();
     const associations = kind === 'topics' || kind === 'mentions';
     const container = associations ? $('association-results') : $(kind + '-popover');
@@ -288,6 +330,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     const selected = current().settings.declarations;
     $('declaration-name').textContent = selected.length ? selected.map(id => declarationItems.find(item => item.id === id)?.label || '已选声明（点击核对）').join('、') : '请选择自主声明';
     for (const [kind, operation] of Object.entries({collection: 'collections.list', declaration: 'declarations.list', location: 'locations.search'})) $('search-' + kind).disabled = blocked() || !supports(operation);
+    for (const [kind, button] of clearButtons) { button.hidden = !current()[kind]; button.disabled = blocked(); }
   }
 
   for (const kind of ['collection', 'declaration', 'location']) $('search-' + kind).onclick = () => active?.kind === kind ? close() : open(kind);

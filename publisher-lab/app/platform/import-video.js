@@ -36,8 +36,9 @@ export async function importVideo({job, account, origin, previous = [], base = n
   const stats = {total: 1, uploaded: 0, reused: 0};
 
   // progress 为可选状态展示；页面关闭不能改变资源上传与保存结果。
-  async function progress(phase) {
-    try { await onProgress?.({phase, completed: phase === 'staging' ? 1 : 0, total: 1}); } catch {}
+  async function progress(phase, asset, message) {
+    try { await onProgress?.({phase, completed: ['ready', 'staging'].includes(phase) ? 1 : 0, total: 1, countRole: 'video',
+      ...(asset ? {assetID: asset.id, assetId: asset.id, assetName: asset.name, role: 'video'} : {}), ...(message ? {message} : {})}); } catch {}
   }
 
   // persist 保留同一账号、素材的最新资源，调用方提交成功后才进入下一阶段。
@@ -53,67 +54,75 @@ export async function importVideo({job, account, origin, previous = [], base = n
   if (!asset || resolution.assets.length !== 1 || typeof asset.revision !== 'string' || !asset.revision) {
     throw Error('无法确认视频文件版本，请检查图库素材后重新带入。');
   }
-  let record = records.find(old => old.account === account && old.kind === 'video' && old.assetID === asset.id &&
-    old.revision === asset.revision && typeof old.uploadFile?.vid === 'string' && old.uploadFile.vid);
-  if (record) { record = structuredClone(record); stats.reused++; }
-  else {
-    await progress('reading');
-    const file = await prepareFile(job, origin, asset);
-    if (!file?.file || file.assetID !== asset.id || file.revision !== asset.revision) {
-      throw Error('视频读取不完整或版本已变化，请重新带入。');
-    }
-    const auth = await getAuth(account);
-    await progress('uploading');
-    const result = await uploadVideo(file.file, auth);
-    if (typeof result?.vid !== 'string' || !result.vid || result.uploadFile?.vid !== result.vid) {
-      throw Error('抖音未确认视频资源，请检查上传结果后重试。');
-    }
-    record = {
-      account,
-      kind: 'video',
-      assetID: asset.id,
-      revision: asset.revision,
-      uploadFile: structuredClone(result.uploadFile),
-      videoMeta: structuredClone(result.videoMeta || {}),
-      enabled: false,
-      ready: false,
-    };
-    await persist(record);
-    stats.uploaded++;
-  }
-
-  // 复用就绪状态还必须有相同资源的完整 transend 证明；单独的布尔标记不能证明平台已处理完成。
-  let confirmed = false;
-  if (record.ready === true && record.enabled === true && record.transcode?.encode === 1) {
-    try { record.uploadFile = completedVideo(record.uploadFile, record.transcode); confirmed = true; } catch {}
-  }
-  if (!confirmed) {
-    record.ready = false;
-    await progress('processing');
-    // 原生流程在查询前显式 enable 媒体；只有业务成功后保存标记，重试不会重复触发已确认的 enable。
-    if (record.enabled !== true) {
-      await enableVideo(record.uploadFile.vid);
-      record.enabled = true;
-      await persist(record);
-    }
-    const deadline = now() + 180000;
-    // 此轮询只等待用户已提交的视频，不常驻后台；查询失败立即返回，已保存 VID 供下次显式重试。
-    while (now() < deadline) {
-      const status = await getVideoStatus(record.uploadFile.vid);
-      if (!status || !Number.isInteger(status.encode)) throw Error('无法确认视频处理状态，请稍后重新带入；已上传文件会继续复用。');
-      if (status.encode === 1) {
-        record.uploadFile = completedVideo(record.uploadFile, status);
-        record.transcode = Object.fromEntries(['encode', 'duration', 'width', 'height', 'poster_uri', 'format', 'play_url']
-          .map(key => [key, status[key]]));
-        record.ready = true;
-        await persist(record);
-        break;
+  let record;
+  try {
+    record = records.find(old => old.account === account && old.kind === 'video' && old.assetID === asset.id &&
+      old.revision === asset.revision && typeof old.uploadFile?.vid === 'string' && old.uploadFile.vid);
+    if (record) { record = structuredClone(record); stats.reused++; await progress('reused', asset); }
+    else {
+      await progress('reading', asset);
+      const file = await prepareFile(job, origin, asset);
+      if (!file?.file || file.assetID !== asset.id || file.revision !== asset.revision) {
+        throw Error('视频读取不完整或版本已变化，请重新带入。');
       }
-      if (status.encode !== 0) throw Error('抖音返回了无法确认的视频处理状态，请检查原生页面；已上传文件会继续复用。');
-      const remaining = deadline - now();
-      if (remaining > 0) await wait(Math.min(1000, remaining));
+      const auth = await getAuth(account);
+      await progress('uploading', asset);
+      const result = await uploadVideo(file.file, auth);
+      if (typeof result?.vid !== 'string' || !result.vid || result.uploadFile?.vid !== result.vid) {
+        throw Error('抖音未确认视频资源，请检查上传结果后重试。');
+      }
+      record = {
+        account,
+        kind: 'video',
+        assetID: asset.id,
+        revision: asset.revision,
+        uploadFile: structuredClone(result.uploadFile),
+        videoMeta: structuredClone(result.videoMeta || {}),
+        enabled: false,
+        ready: false,
+      };
+      await persist(record);
+      stats.uploaded++;
+      await progress('uploaded', asset);
     }
-    if (!record.ready) throw Error('视频仍在抖音处理中，请稍后重新带入；已上传文件会继续复用。');
+
+    // 复用就绪状态还必须有相同资源的完整 transend 证明；单独的布尔标记不能证明平台已处理完成。
+    let confirmed = false;
+    if (record.ready === true && record.enabled === true && record.transcode?.encode === 1) {
+      try { record.uploadFile = completedVideo(record.uploadFile, record.transcode); confirmed = true; } catch {}
+    }
+    if (!confirmed) {
+      record.ready = false;
+      await progress('processing', asset);
+      // 原生流程在查询前显式 enable 媒体；只有业务成功后保存标记，重试不会重复触发已确认的 enable。
+      if (record.enabled !== true) {
+        await enableVideo(record.uploadFile.vid);
+        record.enabled = true;
+        await persist(record);
+      }
+      const deadline = now() + 180000;
+      // 此轮询只等待用户已提交的视频，不常驻后台；查询失败立即返回，已保存 VID 供下次显式重试。
+      while (now() < deadline) {
+        const status = await getVideoStatus(record.uploadFile.vid);
+        if (!status || !Number.isInteger(status.encode)) throw Error('无法确认视频处理状态，请稍后重新带入；已上传文件会继续复用。');
+        if (status.encode === 1) {
+          record.uploadFile = completedVideo(record.uploadFile, status);
+          record.transcode = Object.fromEntries(['encode', 'duration', 'width', 'height', 'poster_uri', 'format', 'play_url']
+            .map(key => [key, status[key]]));
+          record.ready = true;
+          await persist(record);
+          break;
+        }
+        if (status.encode !== 0) throw Error('抖音返回了无法确认的视频处理状态，请检查原生页面；已上传文件会继续复用。');
+        const remaining = deadline - now();
+        if (remaining > 0) await wait(Math.min(1000, remaining));
+      }
+      if (!record.ready) throw Error('视频仍在抖音处理中，请稍后重新带入；已上传文件会继续复用。');
+    }
+    await progress('ready', asset);
+  } catch (error) {
+    if (!dependencies.signal?.aborted && error?.name !== 'AbortError') await progress('failed', asset, '视频处理失败');
+    throw error;
   }
 
   await progress('staging');

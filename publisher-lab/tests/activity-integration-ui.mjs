@@ -44,10 +44,10 @@ try {
       assets: [{id: 'activity-image', name: '合成活动图片.jpg', kind: 'image'}], title: '摄影记录', description: '原文😀 #摄影日常', aiContext: '一段新的摄影记录',
       topics: [{id: '7001', name: '摄影日常'}], mentions: [], activities: [], settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []}}]};
     const state = JSON.parse(sessionStorage.getItem('activity-integration-state') || JSON.stringify(initial));
-    const profile = {id: 'activity-profile', accountId: '123', name: '活动回归账号', hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = {};
+    const profile = {id: 'activity-profile', accountId: '123', name: '活动回归账号', browserSessionAvailable: true, hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = {};
     window.__activityUI = {state, requests: []};
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'activity-integration-fixture', frontendState: state};
-    const status = () => ({hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
+    window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'activity-integration-fixture', frontendState: state};
+    const status = () => ({browserSessionAvailable: true, hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
       if (message.op === 'persist') { window.__activityUI.state = structuredClone(message.value); sessionStorage.setItem('activity-integration-state', JSON.stringify(message.value)); return {ok: true}; }
       if (['session.status', 'session.identify', 'session.select'].includes(message.op)) return {ok: true, data: status()};
@@ -55,7 +55,7 @@ try {
       if (message.op === 'state.get') return {ok: true, data: message.keys ? {[message.keys]: runtime[message.keys]} : runtime};
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
       if (message.op === 'session.cancel') return {ok: true, data: {cancelled: true}};
-      if (message.op !== 'session.request') throw Error('Unexpected native operation: ' + message.op);
+      if (message.op !== 'browser.request') throw Error('Unexpected native operation: ' + message.op);
       const url = new URL(message.url); window.__activityUI.requests.push({url: message.url, method: message.method});
       let data;
       if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: '123', nickname: profile.name}};
@@ -119,6 +119,7 @@ try {
   assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
 
   // 刷新恢复活动与话题身份，AI 替换正文则清除不再可见的关联，不留下隐式参加状态。
+  await page.keyboard.press('Escape');
   await card.hover(); await toggle.click();
   await page.waitForFunction(() => window.__activityUI.state.drafts[0].activities.length === 1);
   await page.reload(); await connect();
@@ -129,10 +130,11 @@ try {
   await page.locator('#ai-apply').click(); await page.locator('#confirm-dialog[open]').waitFor(); await page.locator('#confirm-submit').click();
   await page.waitForFunction(() => !document.querySelector('#ai-dialog').open && window.__activityUI.state.drafts[0].title === '一段新的记录');
   const replacement = await page.locator('#description').inputValue();
-  assert.match(replacement, /^用新的文字记下这个下午。\n#\d{8}$/);
-  await expectDescription(replacement, []);
+  assert.equal(replacement, '#有序图库\n用新的文字记下这个下午。', 'missing capture metadata and an undated directory keep the brand without inventing a photo date');
+  await expectDescription(replacement, ['0']);
+  assert.deepEqual(await page.locator('.studio-description-entity').allTextContents(), ['#有序图库'], 'the new brand stays highlighted after old topic and activity tokens are replaced');
   assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].activities), []);
-  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].topics), []);
+  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}]);
   assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
   assert.equal(aiCalls.length, 1);
   assert.equal(await page.evaluate(() => window.__activityUI.requests.some(item => item.method !== 'GET' || /upload|create_v2/.test(item.url))), false);

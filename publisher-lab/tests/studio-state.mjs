@@ -19,6 +19,15 @@ const normalized = sanitizeDraft(selected);
 assert.deepEqual(normalized.assets.map(item => item.id), ['image-b', 'image-a']);
 assert.equal(normalized.description, selected.description, '正文中的话题、换行和 UTF-16 内容必须原样保存');
 assert.deepEqual(normalized.topics, [{id: '101', name: '旅行'}, {id: '102', name: '夏天'}]);
+const nameTopics = [{id: '0', name: '20190701'}, {id: '0', name: '未收录的新话题'}];
+const namedDraft = sanitizeDraft({...selected, topics: [...nameTopics, nameTopics[0], {id: '', name: '无身份'}]});
+assert.deepEqual(namedDraft.topics, nameTopics, '官网 0 标记按名称去重，多个新话题独立保留');
+assert.deepEqual(sanitizeDraft(namedDraft).topics, nameTopics, '保存后恢复仍保留名称话题');
+assert.deepEqual(publicationDraft(namedDraft).topics, nameTopics, '名称话题进入发布快照');
+for (const topics of [[nameTopics[0], {id: '123', name: '20190701'}], [{id: '123', name: '20190701'}, nameTopics[0]]]) {
+  assert.deepEqual(sanitizeDraft({...selected, topics}).topics, [{id: '123', name: '20190701'}], '同名已知 ID 优先于 0 标记');
+}
+assert.notEqual(contentSignature(namedDraft), contentSignature({...namedDraft, topics: [nameTopics[0]]}), '每个名称话题都影响发布内容版本');
 assert.deepEqual(normalized.music, {id: '301', name: '合成音乐'});
 assert.deepEqual(normalized.collection, {id: '401', name: '合成合集'});
 assert.deepEqual(normalized.location, {id: '501', name: '合成公园', cityCode: '110100', cityName: '北京市'});
@@ -130,4 +139,20 @@ assert.equal(publicationDraft(upgraded.current()).description, '用户已删除�
 assert.equal(normalizeState(upgraded.data).drafts[0].description, '用户已删除话题与提及');
 const largeLegacy = normalizeState({version: 1, drafts: [{...selected, description: '字'.repeat(20000), topics: [{id: '101', name: '旅行'}], mentions: []}]});
 assert.equal(normalizeState(largeLegacy).drafts[0].description, '字'.repeat(20000) + ' #旅行', '旧字段迁入正文不能在下一次保存时被旧正文上限截断');
-console.log('studio-state: resource round-trip, inline topic text, publication invalidation, failed save and retry passed');
+// 删除列表项只改变草稿集合，不修改仍在编辑的内容、时间或版本签名。
+{
+  const a = {...emptyDraft(), id: 'delete-a', title: '保留中的编辑', updatedAt: '2026-01-01T00:00:00Z'};
+  const b = {...emptyDraft(), id: 'delete-b', receipt: {status: 'unknown', requestId: 'existing-submit', updatedAt: '2026-01-01T00:00:00Z'}};
+  const drafts = new StudioStore({version: 2, activeDraftId: a.id, drafts: [a, b]}, async () => {});
+  const before = structuredClone(drafts.current()), signature = contentSignature(before);
+  drafts.remove(b.id);
+  assert.deepEqual(drafts.current(), before);
+  assert.equal(contentSignature(drafts.current()), signature);
+  assert.equal(drafts.revision, 1);
+  drafts.remove('missing-draft'); assert.equal(drafts.revision, 1);
+  drafts.remove(a.id);
+  assert.equal(drafts.data.drafts.length, 1);
+  assert.notEqual(drafts.current().id, a.id);
+  assert.equal(drafts.current().title, ''); assert.equal(drafts.current().receipt, null);
+}
+console.log('studio-state: resource round-trip, inline topic text, publication invalidation, failed save, deletion isolation and retry passed');

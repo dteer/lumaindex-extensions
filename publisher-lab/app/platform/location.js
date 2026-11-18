@@ -1,14 +1,18 @@
-// searchLocations 由插件通过宿主原生会话直接查询地点；登录会话由宿主携带，不调用页面组件。
+import {creatorJSONOptions} from './browser-request.js';
+
+// searchLocations 在当前账号网页环境查询地点；错误直接反馈，不额外请求账号或自动恢复登录。
 export async function searchLocations(params, send){
- const origin='https://creator.douyin.com';const fetch=(value,options)=>send(new URL(value,origin).href,options);
+ const origin='https://creator.douyin.com';const fetch=(value,options)=>send(new URL(value,origin).href,creatorJSONOptions(options));
  try{
   const url=new URL('/aweme/v1/life/video_api/search/poi/',origin);
   const values={count:10,from_webapp:1,get_current_loc:1,is_image_album_style:1,keywords:params.keyword,search_type:0,poi_anchor_tab:2,page:params.page,poi_mode:2,load_interest_city_type:1,selected_city_code:params.cityCode,selected_city_name:params.cityName,aid:1128};
   for(const [k,v] of Object.entries(values))url.searchParams.set(k,v);
-  const response=await fetch(url,{credentials:'include',redirect:'error',signal:AbortSignal.timeout(12000)}),data=await response.json();
+  const response=await fetch(url,{credentials:'include',redirect:'error',signal:AbortSignal.timeout(12000)});
+  if([401,403].includes(response.status))return {ok:false,code:'SESSION_EXPIRED',error:'当前抖音登录不可用，请在账号菜单中重新登录后重试。'};
+  const data=await response.json();
   if(!response.ok||data.status_code!==0)return {ok:false,error:'地点查询失败，请检查抖音登录状态后重试'};
   return {ok:true,data:{items:(data.poi_list||[]).map(x=>({id:x.poi_id,name:x.poi_name,address:x.address_info?.simple_addr||'',extra:JSON.stringify({...JSON.parse(x.anchor_post_ext?.anchor_content||'{}'),...(typeof x.is_commerce_intention==='boolean'?{is_commerce_intention:x.is_commerce_intention}:{})}),requiresNativeSelection:Boolean(x.trigger_key_user_block)})),nextPage:data.has_more?data.page:null}};
- }catch{return {ok:false,error:'地点查询超时或网络不可用，请重试'};}
+ }catch(error){const code=typeof error?.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.code)?error.code:undefined;return {ok:false,...(code?{code}:{}),error:/[\u3400-\u9fff]/.test(error?.message||'')?error.message:'地点查询超时或网络不可用，请重试'};}
 }
 
 // 校验所有跨页面参数，查询目标固定为抖音接口，不接受任意 URL 或脚本。

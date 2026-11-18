@@ -1,3 +1,5 @@
+import {creatorJSONOptions} from './browser-request.js';
+
 // validateCollectionQuery 校验合集类型和平台数字游标；每页固定十条，不接收外部 URL 或任意分页大小。
 export function validateCollectionQuery(params) {
   const cursor = params?.cursor === undefined ? '0' : params.cursor;
@@ -6,10 +8,9 @@ export function validateCollectionQuery(params) {
   return {kind:params.kind,cursor};
 }
 
-// listCollections 由插件通过宿主原生会话直接读取一页普通免费合集，不调用平台请求包装器或组件。
-// 本函数独立校验参数；账号前后核验由调用方 完成。
+// listCollections 在当前账号网页环境读取一页普通免费合集；参数校验和平台错误均直接反馈。
 export async function listCollections(params, send) {
-  const fetch = (value, options) => send(new URL(value, 'https://creator.douyin.com').href, options);
+  const fetch = (value, options) => send(new URL(value, 'https://creator.douyin.com').href, creatorJSONOptions(options));
   const cursor = params?.cursor === undefined ? '0' : params.cursor;
   if (!params || Array.isArray(params) || !['image','video'].includes(params.kind) ||
       typeof cursor !== 'string' || !/^(0|[1-9]\d{0,29})$/.test(cursor)) return {ok:false,error:'合集查询参数无效，请重新打开合集列表。'};
@@ -18,6 +19,7 @@ export async function listCollections(params, send) {
     // 发布页 imageCollection 使用 status=0,2；以服务器游标分页，不预取全量后切片。
     url.searchParams.set('status','0,2'); url.searchParams.set('count','10'); url.searchParams.set('cursor',cursor);
     const response = await fetch(url,{method:'GET',credentials:'include',redirect:'error',signal:AbortSignal.timeout(12000)});
+    if ([401,403].includes(response.status)) return {ok:false,code:'SESSION_EXPIRED',error:'当前抖音登录不可用，请在账号菜单中重新登录后重试。'};
     const data = await response.json();
     if (!response.ok || data?.status_code !== 0 || !Array.isArray(data.mix_list) || ![false,true,0,1].includes(data.has_more)) {
       return {ok:false,error:'合集查询失败，请检查抖音登录状态后重试。'};
@@ -62,7 +64,8 @@ export async function listCollections(params, send) {
       items.push({id:item.mix_id,title:item.mix_name,order,itemCount:count,thumbnailURL,info}); ids.add(item.mix_id);
     }
     return {ok:true,data:{items,nextCursor}};
-  } catch {
-    return {ok:false,error:'无法读取抖音合集，请检查网络和登录状态后重试。'};
+  } catch (error) {
+    const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : undefined;
+    return {ok:false,...(code?{code}:{}),error:/[\u3400-\u9fff]/.test(error?.message||'')?error.message:'无法读取抖音合集，请检查网络和登录状态后重试。'};
   }
 }

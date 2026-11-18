@@ -5,6 +5,8 @@
   color: #161823;
   background: #f8f8fa;
   color-scheme: light;
+  /* 编辑工作台在边缘停住，避免 WebKit 橡皮筋回弹带着整页和吸顶预览反复位移。 */
+  overscroll-behavior: none;
   --text: #161823;
   --muted: #92939b;
   --line: #e9e9ed;
@@ -12,6 +14,12 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: #f8f8fa; }
+/* 任一模态框仍在顶层时锁住背景，保留原滚动位置；关闭最后一个才由浏览器恢复滚动。 */
+:root:has(dialog:modal), body:has(dialog:modal) { overflow: hidden; overscroll-behavior: none; }
+/* 桌面两栏各自滚动，模态窗口也必须锁住这些背景容器；隐藏溢出不会重置已有滚动位置。 */
+body:has(dialog:modal) :is(.editor-column, .preview-column, .workspace, .feedback-region) { overflow: hidden; }
+/* 模态内容保留自身滚动，到达边缘时不把滚轮或触控滚动传给背景。 */
+dialog:modal { overflow: auto; overscroll-behavior: contain; }
 button, input, textarea, select { font: inherit; }
 button, a, summary, input, textarea, select { outline-offset: 3px; }
 button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
@@ -70,6 +78,11 @@ input[type=checkbox], input[type=radio] { accent-color: #161823; }
 
 /* 宿主已经显示插件标题；页面这里只呈现草稿和账号操作。 */
 .studio-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  background: #f8f8fa;
   max-width: 1065px;
   min-height: 48px;
   margin: 0 auto;
@@ -128,7 +141,7 @@ input[type=checkbox], input[type=radio] { accent-color: #161823; }
 .feedback-region:has(> .connection-banner:not([hidden]), > .notice.error:not([hidden])) { margin-bottom: 12px; }
 .connection-banner, .notice { padding: 8px 12px; border-radius: 4px; font-size: 12px; line-height: 18px; color: #6b7075; background: #eeeff2; }
 .connection-banner:not([hidden]) + .notice.error:not([hidden]) { margin-top: 6px; }
-.notice:not(.error) { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 30; max-width: calc(100vw - 40px); box-shadow: 0 3px 16px #1618230d; }
+.notice:not(.error) { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 60; max-width: calc(100vw - 40px); box-shadow: 0 3px 16px #1618230d; }
 .connection-banner.error, .notice.error { color: #b4434e; background: #fff0f1; }
 .workspace { display: grid; grid-template-columns: minmax(0, 710px) 243px; gap: 48px; align-items: start; }
 .editor-column, .editor-scroll { min-width: 0; }
@@ -230,6 +243,11 @@ h3.row-label, .subheading h3 { margin: 0; font-size: 14px; line-height: 22px; fo
 .radio-options label { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; line-height: 24px; white-space: nowrap; }
 .radio-options input { width: 14px; height: 14px; margin: 0; flex-shrink: 0; }
 .radio-options label:has(input:disabled) { color: #a7a7af; }
+.visibility-field { min-width: 0; }
+.visibility-conflict { margin-top: 10px; padding: 10px 12px; border: 1px solid #ecd5a8; border-radius: 6px; background: #fffaf0; color: #795d2c; font-size: 12px; line-height: 20px; }
+.visibility-conflict p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.visibility-conflict .inline-actions { align-items: stretch; }
+.visibility-conflict button { max-width: 100%; white-space: normal; text-align: left; }
 .schedule-row { margin-top: 10px; padding-left: 94px; font-size: 11px; line-height: 18px; }
 #schedule-fields { margin: 12px 0 0 94px; }
 .field-label { display: block; font-size: 13px; margin: 12px 0 8px; }
@@ -249,11 +267,16 @@ h3.row-label, .subheading h3 { margin: 0; font-size: 14px; line-height: 22px; fo
 .activity-panel p { margin: 4px 0; font-size: 12px; line-height: 20px; }
 .activity-items { max-height: 130px; overflow: auto; font-size: 11px; color: #90929d; }
 .activity-items > div { padding: 4px 0; border-bottom: 1px solid #f1f1f4; }
+.preparation-progress-row { display: flex; align-items: baseline; gap: 8px 16px; flex-wrap: wrap; }
+.preparation-progress-name { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; color: #626570; }
+.preparation-progress-status { flex-shrink: 0; max-width: 100%; overflow-wrap: anywhere; }
+.preparation-progress-row:is([data-phase="uploaded"], [data-phase="reused"], [data-phase="ready"], [data-phase="completed"]) .preparation-progress-status { color: #32805b; }
+.preparation-progress-row[data-phase="failed"] .preparation-progress-status { color: #bf4051; }
 progress { width: 100%; height: 4px; accent-color: #161823; margin: 10px 0; }
 body.busy .editor-scroll > section:not(#activity-panel) { opacity: .68; }
 
 /* 预览文字叠在内容上，不为空文案额外保留一块黑色正文区域。 */
-.preview-column { width: 243px; min-width: 0; position: sticky; top: 24px; }
+.preview-column { width: 243px; min-width: 0; }
 .preview-heading { display: flex; align-items: center; justify-content: space-between; height: 22px; font-size: 14px; margin-bottom: 14px; }
 .preview-heading strong { font-weight: 500; }
 .preview-heading > span { color: #a0a1aa; font-size: 11px; }
@@ -282,7 +305,7 @@ body.busy .editor-scroll > section:not(#activity-panel) { opacity: .68; }
 .preview-note { margin: 12px 0 20px; text-align: center; font-size: 11px; line-height: 18px; color: #a2a3ac; }
 .capability-panel { border-top: 1px solid #e8e8ed; padding-top: 12px; color: #9899a2; font-size: 11px; line-height: 20px; }
 .capability-panel summary { cursor: pointer; }
-.experiment-banner { margin: 8px 0 12px; color: #9899a2; font-size: 11px; line-height: 18px; }
+.capability-note { margin: 8px 0 12px; color: #9899a2; font-size: 11px; line-height: 18px; }
 .capability-row { display: flex; justify-content: space-between; gap: 8px; margin: 8px 0; font-size: 11px; }
 .capability-row .available { color: #4b977a; }
 .receipt-panel { margin-bottom: 18px; padding: 14px; background: #fff; border-radius: 6px; }
@@ -294,6 +317,7 @@ body.busy .editor-scroll > section:not(#activity-panel) { opacity: .68; }
 
 /* 尚未选素材时使用创作者中心的上传入口布局。 */
 body[data-phase=upload] { background: #fff; }
+body[data-phase=upload] .studio-toolbar { background: #fff; }
 body[data-phase=upload] .studio-toolbar, body[data-phase=upload] .publisher-page { max-width: 1480px; }
 body[data-phase=upload] .workspace { display: block; }
 body[data-phase=upload] .editor-column, body[data-phase=upload] .preview-column { display: none; }
@@ -360,8 +384,12 @@ dialog::backdrop { background: #1618234d; }
 .new-drafts { display: flex; gap: 10px; margin-bottom: 20px; }
 .new-drafts button { flex: 1; font-size: 12px; padding-inline: 8px; }
 .draft-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 7px; overflow: auto; }
-.draft-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 68px; padding: 11px 8px; border-color: transparent; text-align: left; white-space: normal; }
+.draft-row { display: flex; align-items: center; gap: 5px; }
+.draft-item { display: flex; align-items: flex-start; flex: 1; min-width: 0; gap: 8px; min-height: 68px; padding: 11px 8px; border-color: transparent; text-align: left; white-space: normal; }
 .draft-item[aria-current=true] { background: #f6f6f8; border-color: #e7e7ec; }
+.draft-delete { flex: 0 0 auto; min-height: 32px; padding: 5px 7px; border-color: transparent; color: #787b88; font-size: 12px; }
+.draft-delete:hover:not(:disabled) { color: #b52a35; background: #fff2f3; }
+.draft-delete:focus-visible { outline: 2px solid #9c6470; outline-offset: 1px; }
 .draft-icon { display: grid; place-items: center; flex: 0 0 28px; height: 32px; background: #fafafa; border: 1px solid #e8e8ed; border-radius: 4px; color: #999ba5; font-size: 17px; }
 .draft-text { flex: 1; min-width: 0; }
 .draft-text strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 500; }
@@ -381,6 +409,20 @@ dialog::backdrop { background: #1618234d; }
 .cover-crop-dialog p { font-size: 12px; line-height: 20px; color: #9396a1; }
 .crop-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .cover-crop-dialog .crop-error { color: #ba4651; }
+
+/* 桌面固定工具栏和工作区边界，正文与预览独立滚动；预览不再受正文底边挤压。 */
+@media (min-width: 901px) {
+  :root { height: 100%; overflow: hidden; }
+  body { height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+  .studio-toolbar { flex: 0 0 auto; }
+  .publisher-page { width: 100%; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
+  .feedback-region { flex: 0 0 auto; max-height: min(160px, 25dvh); overflow-y: auto; overscroll-behavior: contain; }
+  .publish-tabs { flex: 0 0 auto; }
+  .workspace { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+  .editor-column, .preview-column { min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: 12px; }
+  .editor-scroll, .actionbar { flex: 0 0 auto; }
+  body[data-phase=upload] .workspace { overflow-y: auto; overscroll-behavior: contain; }
+}
 
 @media (max-width: 1120px) {
   .workspace { grid-template-columns: minmax(0, 1fr) 225px; gap: 32px; }
@@ -458,3 +500,6 @@ dialog::backdrop { background: #1618234d; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+
+/* 试听失败紧邻选曲呈现，保留原表单网格与窄屏换行。 */
+.music-preview-message { grid-column: 2; margin: 6px 0 0; color: #b4434e; font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
