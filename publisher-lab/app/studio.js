@@ -183,11 +183,12 @@ function currentAssetIDs() {
   return [...new Set([...current().assets.map(asset => asset.id), ...(current().cover?.assetId ? [current().cover.assetId] : [])])];
 }
 
-// notice 以轻量反馈显示结果；普通提示自动收起，错误持续保留供用户处理。
+// notice 以轻量反馈显示结果；普通提示自动收起，错误可手动关闭但不改动草稿或回执。
 function notice(message = '', error = false) {
   clearTimeout(noticeTimer);
   $('page-notice').hidden = !message;
-  $('page-notice').textContent = message;
+  $('page-notice-message').textContent = message;
+  $('dismiss-page-notice').hidden = !error;
   $('page-notice').classList.toggle('error', error);
   $('page-notice').setAttribute('role', error ? 'alert' : 'status');
   if (message && !error) noticeTimer = setTimeout(() => { $('page-notice').hidden = true; fitWorkspace(); }, 6000);
@@ -1430,6 +1431,8 @@ async function closeHost(host = true) {
 
 // bindEvents 集中绑定界面操作，所有最终提交入口都经过 publishPublication 的二次确认。
 function bindEvents() {
+  // 关闭仅清理当前通知；后续操作仍可显示新错误，发布防重状态由原回执控制。
+  $('dismiss-page-notice').onclick = () => notice();
   // 账号工具收于同一菜单；点击空白或 Escape 只收起菜单，不触发登录或清除。
   const accountMenu = $('account-menu');
   document.addEventListener('pointerdown', event => { if (accountMenu?.open && !accountMenu.contains(event.target)) accountMenu.open = false; });

@@ -89,7 +89,9 @@ try {
     await resetWorkspaceScroll();
     const metrics = await page.evaluate(() => {
       const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width, height: r.height}; };
-      return {card: rect('.basic-card'), preview: rect('.preview-column'), description: rect('.description-editor'), cover: rect('.cover-row'),
+      const preview = document.querySelector('.preview-column'), style = getComputedStyle(preview), bounds = preview.getBoundingClientRect();
+      return {card: rect('.basic-card'), preview: rect('.preview-column'), phone: rect('.studio-phone'), description: rect('.description-editor'), cover: rect('.cover-row'),
+        previewCenter: bounds.x + parseFloat(style.paddingLeft) + (preview.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / 2,
         overflow: document.documentElement.scrollWidth > innerWidth,
         previewVisible: getComputedStyle(document.querySelector('.preview-column')).display !== 'none',
         tabsVisible: getComputedStyle(document.querySelector('.publish-tabs')).display !== 'none',
@@ -100,9 +102,10 @@ try {
     assert.equal(metrics.successBannerVisible, false, 'verified account does not leave a persistent banner');
     if (width >= 1200) {
       assert.ok(metrics.card.y >= 40 && metrics.card.y <= 100, `form starts near the compact toolbar: ${JSON.stringify(metrics)}`);
-      assert.ok(metrics.card.width >= 650 && metrics.card.width <= 712, `official form width: ${JSON.stringify(metrics)}`);
+      assert.ok(metrics.card.width > metrics.preview.width * 1.5 && metrics.description.width > metrics.card.width * 0.6, 'wide layout keeps a readable primary editing column');
       assert.equal(metrics.previewVisible, true);
-      assert.ok(metrics.preview.width >= 235 && metrics.preview.width <= 245, `official preview width: ${JSON.stringify(metrics)}`);
+      assert.ok(metrics.preview.width > metrics.phone.width, 'wide side column leaves reading space beyond the centered phone');
+      assert.ok(Math.abs(metrics.phone.x + metrics.phone.width / 2 - metrics.previewCenter) <= 1, 'phone stays centered inside the usable preview width, clear of its scrollbar');
       assert.ok(Math.abs(metrics.preview.y - metrics.card.y) <= 5, 'preview aligns with the first card');
       assert.ok(metrics.description.height >= 140 && metrics.description.height <= 200, 'description stays compact');
       assert.ok(metrics.cover.height <= 100, 'cover is a compact horizontal field');

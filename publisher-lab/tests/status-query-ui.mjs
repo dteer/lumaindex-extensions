@@ -114,6 +114,27 @@ try {
   await page.evaluate(() => __statusUI.release(__statusUI.pending[0].requestId, true));
   await page.locator('#page-notice').filter({hasText: '合成状态查询失败'}).waitFor();
   await page.waitForFunction(() => !document.querySelector('#status-shortcut').disabled);
+  await page.waitForFunction(() => __statusUI.state.drafts.find(item => item.id === 'draft-b').description === 'B 的查询失败也保留编辑');
+  // 键盘关闭红色通知只隐藏本条提示，不修改任何草稿、回执、持久发布状态或防重按钮。
+  const beforeDismiss = await page.evaluate(() => ({state: structuredClone(__statusUI.state), runtime: structuredClone(__statusUI.runtime),
+    messages: __statusUI.messages.length, requests: __statusUI.requests.length, description: document.querySelector('#description').value}));
+  const dismiss = page.getByRole('button', {name: '关闭提示', exact: true});
+  assert.equal(await page.locator('#page-notice').getAttribute('role'), 'alert');
+  await dismiss.focus(); await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#page-notice').isHidden(), true);
+  assert.deepEqual(await page.evaluate(() => ({state: structuredClone(__statusUI.state), runtime: structuredClone(__statusUI.runtime),
+    messages: __statusUI.messages.length, requests: __statusUI.requests.length, description: document.querySelector('#description').value})), beforeDismiss);
+  assert.equal(await page.locator('#publish').isDisabled(), true, 'dismissing an error must not clear duplicate-publication protection');
+  assert.equal(await page.locator('#receipt-message').textContent(), beforeB.receipt.message);
+
+  // 后续一次真实查询错误仍重新显示；鼠标关闭同样只处理当前提示。
+  await page.locator('#status-shortcut').click();
+  await page.waitForFunction(() => __statusUI.pending.length === 1);
+  await page.evaluate(() => __statusUI.release(__statusUI.pending[0].requestId, true));
+  await page.locator('#page-notice').filter({hasText: '合成状态查询失败'}).waitFor();
+  await dismiss.click();
+  assert.equal(await page.locator('#page-notice').isHidden(), true);
+  assert.deepEqual(await page.evaluate(() => __statusUI.state.drafts.find(item => item.id === 'draft-b').receipt), beforeB.receipt);
   await page.locator('#save-draft').click();
   await page.waitForFunction(() => __statusUI.state.drafts.find(item => item.id === 'draft-b').description === 'B 的查询失败也保留编辑');
   assert.deepEqual(await page.evaluate(() => __statusUI.state.drafts.find(item => item.id === 'draft-b').receipt), beforeB.receipt);
@@ -132,12 +153,12 @@ try {
   await page.waitForFunction(id => __statusUI.released.includes(id), closingRequest);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.deepEqual(await page.evaluate(() => __statusUI.state), closedState, 'cancelled late result cannot rewrite closed drafts');
-  assert.equal(await page.evaluate(() => __statusUI.requests.filter(item => item.path === '/web/api/media/item/info/').length), 3);
+  assert.equal(await page.evaluate(() => __statusUI.requests.filter(item => item.path === '/web/api/media/item/info/').length), 4);
   assert.equal(await page.evaluate(() => __statusUI.requests.some(item => item.method !== 'GET' || /upload|create_v2|user\/info/.test(item.path))), false);
   assert.equal(await page.evaluate(() => __statusUI.messages.some(message => message.op === 'session.login' || message.op.startsWith('body.'))), false);
   assert.deepEqual(externalRequests, []);
   assert.deepEqual(errors, []);
-  console.log('status query UI passed: slow read permits editing/save/draft switch/close, originating-draft receipts, failure preservation, cancellation and no uploads/publication');
+  console.log('status query UI passed: non-blocking reads, originating-draft receipts, dismissible errors without state changes, repeat error visibility, failure preservation, cancellation and no uploads/publication');
 } finally {
   await browser.close(); await new Promise(resolve => server.close(resolve));
 }
