@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {createStudioClient} from '../app/studio-client.js';
 import {createStudioEngine} from '../app/platform/studio-engine.js';
+import {resolveAssets} from '../app/platform/media.js';
 
 const origin = 'http://127.0.0.1:8765';
 const account = {status_code: 0, user: {uid: '123', nickname: '合成账号'}};
@@ -43,6 +44,7 @@ const draft = {id: 'cancel-draft', name: '合成作品', kind: 'image', assets: 
   }, send: async input => {
     const path = new URL(input).pathname;
     if (path === '/web/api/media/user/info/') return new Response(JSON.stringify(account));
+    if (path === '/aweme/v3/user_declaration/suggestion/') return new Response(JSON.stringify({status_code: 0, data: {options: [], block_type: 0}}));
     assert.equal(path, '/web/api/media/upload/auth/v5/');
     return new Response(JSON.stringify({status_code: 0, auth: JSON.stringify({AccessKeyID: 'test', SecretAccessKey: 'test', SessionToken: 'test', ExpiredTime: '2060-01-01T00:00:00Z'})}));
   }, upload: {
@@ -69,3 +71,34 @@ const draft = {id: 'cancel-draft', name: '合成作品', kind: 'image', assets: 
 }
 
 console.log('native cancellation: import preservation, query reaches native cancel once, preparation stops both channels and later uploads');
+
+// 素材预检失败后停止领取下一项，并等其他在途元数据读取结束，避免旧任务越过失败边界继续运行。
+{
+  const originalFetch = globalThis.fetch, started = [], pending = new Map();
+  globalThis.fetch = async input => {
+    const id = new URL(input).pathname.split('/').at(-1);
+    started.push(id);
+    return new Promise((resolve, reject) => pending.set(id, {resolve, reject}));
+  };
+  try {
+    const job = {...draft, assets: Array.from({length: 8}, (_, index) => ({id: `asset-${index}`, name: `${index}.jpg`}))};
+    let settled = false;
+    const resolving = resolveAssets(job, origin);
+    resolving.then(() => { settled = true; }, () => { settled = true; });
+    assert.deepEqual(started, ['asset-0', 'asset-1', 'asset-2', 'asset-3']);
+    const failure = new Error('合成素材读取失败');
+    pending.get('asset-0').reject(failure);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'failure must wait for the other active reads before unlocking preparation');
+    pending.get('asset-1').resolve(new Response(JSON.stringify({code: 0, data: {name: '1.jpg', sizeBytes: 12, modifiedAt: 'v1'}})));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 4, 'settled channel must not read later assets after a peer fails');
+    pending.get('asset-2').reject(new Error('第二条在途读取失败'));
+    pending.get('asset-3').resolve(new Response(JSON.stringify({code: 0, data: {name: '3.jpg', sizeBytes: 12, modifiedAt: 'v1'}})));
+    await assert.rejects(resolving, error => error === failure);
+    assert.equal(started.length, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+console.log('native media resolution: first failure stops new reads and waits for all in-flight metadata requests');

@@ -1,0 +1,7 @@
+/* 原生 textarea 负责可见文字与输入，背后镜像仅绘制实体底色。
+   wrapper 即时裁切旧镜像宽度，避免 ResizeObserver 下一帧同步前撑大窄窗口页面。 */
+.studio-description-highlight { position: relative; min-width: 0; width: 100%; padding: 0; border: 0; border-radius: inherit; overflow: hidden; }
+.studio-description-highlight-viewport { position: absolute; z-index: 0; box-sizing: border-box; margin: 0; padding: 0; overflow: hidden; pointer-events: none; user-select: none; -webkit-user-select: none; }
+.studio-description-highlight-content { position: relative; box-sizing: border-box; margin: 0; border: 0; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; -webkit-text-fill-color: transparent; pointer-events: none; transform-origin: top left; }
+.studio-description-highlight .studio-description-highlight-input { position: relative; z-index: 1; background: transparent !important; }
+.studio-description-highlight .studio-description-entity { display: inline; margin: 0; padding: 0; border: 0; border-radius: 2px; font: inherit; line-height: inherit; color: transparent; -webkit-text-fill-color: transparent; background: #e4f0ff; box-shadow: 0 -1px 0 #e4f0ff, 0 1px 0 #e4f0ff; box-decoration-break: clone; -webkit-box-decoration-break: clone; }

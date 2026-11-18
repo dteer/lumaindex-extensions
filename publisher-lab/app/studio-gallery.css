@@ -1,0 +1,87 @@
+/* 图文素材区保持纯图片布局，右上角独立按钮只移除当前作品的图片引用。 */
+.studio-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; }
+.studio-gallery-grid:empty { display: none; }
+.studio-gallery-grid .studio-gallery-image { display: block; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 3px; overflow: hidden; aspect-ratio: 1; background: #f3f3f5; cursor: zoom-in; }
+.studio-gallery-grid .studio-gallery-image:hover { border: 0; background: #f3f3f5; }
+.studio-gallery-card { position: relative; min-width: 0; }
+.studio-gallery-card.is-dragging { opacity: .4; }
+.studio-gallery-card.drop-before::before, .studio-gallery-card.drop-after::after { content: ''; position: absolute; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: #5b79ff; pointer-events: none; }
+.studio-gallery-card.drop-before::before { left: -6px; }
+.studio-gallery-card.drop-after::after { right: -6px; }
+.studio-gallery-image[draggable=true] { cursor: grab; }
+.studio-gallery-image[draggable=true]:active { cursor: grabbing; }
+.studio-gallery-card .studio-gallery-remove { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 24px; height: 24px; min-height: 0; padding: 3px; border: 0; border-radius: 50%; color: #666870; background: transparent; }
+.studio-gallery-card .studio-gallery-remove svg { width: 18px; height: 18px; padding: 3px; border-radius: 50%; background: #fffffff0; }
+.studio-gallery-card .studio-gallery-remove:hover:not(:disabled) { border: 0; background: #fff5; }
+.studio-gallery-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.studio-gallery-video { display: block; width: 100%; max-height: 320px; grid-column: 1 / -1; background: #000; }
+
+/* 放大层只有图片与必要导航；contain 确保横图、竖图均可完整查看。 */
+.studio-gallery-lightbox { box-sizing: border-box; position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: #08090b; color: #fff; overflow: hidden; }
+.studio-gallery-lightbox::backdrop { background: #08090b; }
+.studio-gallery-lightbox-surface { position: absolute; inset: 20px 64px; display: flex; align-items: center; justify-content: center; outline: none; touch-action: pan-y; overflow: hidden; cursor: grab; }
+.studio-gallery-lightbox-surface img, .studio-gallery-lightbox-surface video { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-select: none; }
+.studio-gallery-lightbox > button { position: absolute; display: grid; place-items: center; width: 44px; height: 44px; min-height: 0; margin: 0; padding: 10px; border: 0; border-radius: 50%; color: #fff; background: #26272bc9; cursor: pointer; }
+.studio-gallery-lightbox > button:hover:not(:disabled) { background: #44454bd9; border: 0; }
+.studio-gallery-lightbox > button:disabled { opacity: .2; cursor: default; }
+.studio-gallery-lightbox > button svg { display: block; width: 24px; height: 24px; }
+.studio-gallery-lightbox .studio-gallery-close { top: 14px; right: 14px; }
+.studio-gallery-lightbox .studio-gallery-previous { top: calc(50% - 22px); left: 12px; }
+.studio-gallery-lightbox .studio-gallery-next { top: calc(50% - 22px); right: 12px; }
+
+/* 按参考手机截图的比例布局：黑色屏幕、刘海、固定顶部与底部栏。 */
+.studio-phone { box-sizing: border-box; container-type: inline-size; position: relative; isolation: isolate; width: 100%; aspect-ratio: 486 / 1030; overflow: hidden; border: 5px solid #242530; border-bottom-color: #211d20; border-radius: 25px; color: #fff; background: #000; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+.studio-phone [hidden] { display: none !important; }
+.studio-phone-notch { position: absolute; z-index: 2; width: 48%; height: 4%; top: 0; left: 26%; border-radius: 0 0 13px 13px; background: #242530; display: flex; align-items: flex-start; justify-content: center; gap: 1.8cqw; padding-top: 2.3cqw; }
+.studio-phone-speaker { width: 17cqw; height: 2.3cqw; border-radius: 2cqw; background: #3e3f4a; }
+.studio-phone-camera { width: 2.3cqw; height: 2.3cqw; border-radius: 50%; background: #3e3f4a; }
+.studio-phone-top { position: absolute; z-index: 2; left: 4.4%; right: 4.4%; top: 6.9%; display: flex; align-items: center; justify-content: space-between; color: #55565d; font-size: 4.6cqw; line-height: 1.4; font-weight: 600; pointer-events: none; }
+.studio-phone-top span:first-child { margin-right: 10%; font-size: 3.9cqw; text-decoration-line: overline underline; text-underline-offset: 2px; }
+.studio-phone-top .active::after { content: ''; display: block; width: 6cqw; height: 1px; margin: 1.1cqw auto 0; background: currentColor; }
+.studio-phone-top svg { width: 6.2cqw; height: 6.2cqw; margin-left: 12%; }
+.studio-phone-stage { position: absolute; inset: 17% 0 17%; display: flex; align-items: center; justify-content: center; touch-action: pan-y; outline-offset: -2px; overflow: hidden; cursor: grab; }
+.studio-phone-stage img, .studio-phone-stage video { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-select: none; }
+.studio-phone-actions { position: absolute; z-index: 1; right: 2.2%; bottom: 12.7%; display: flex; align-items: center; flex-direction: column; gap: 5.4cqw; width: 13.5%; pointer-events: none; }
+.studio-phone-avatar { position: relative; width: 12.5cqw; height: 14.2cqw; }
+.studio-phone-avatar-picture { width: 12.5cqw; height: 12.5cqw; border: 1px solid #fff; border-radius: 50%; overflow: hidden; background: #555963; color: #b7bac1; }
+.studio-phone-avatar-picture img, .studio-phone-avatar-picture svg { width: 100%; height: 100%; object-fit: cover; }
+.studio-phone-avatar-picture svg { padding: 1.7cqw; box-sizing: border-box; }
+.studio-phone-follow { position: absolute; display: grid; place-items: center; width: 6.5cqw; height: 6.5cqw; left: 3cqw; bottom: 0; border-radius: 50%; background: #fe2c55; color: #fff; font-size: 6cqw; line-height: 1; font-weight: 500; }
+.studio-phone-action { display: flex; flex-direction: column; align-items: center; gap: 1.7cqw; font-size: 3.8cqw; line-height: 1; text-shadow: 0 1px 2px #0008; }
+.studio-phone-action svg { display: block; width: 9.3cqw; height: 9.3cqw; filter: drop-shadow(0 1px 1px #0003); }
+.studio-phone-record { width: 12.5cqw; height: 12.5cqw; display: grid; place-items: center; border-radius: 50%; background: linear-gradient(45deg, #111, #333, #101012); }
+.studio-phone-record span { display: grid; place-items: center; width: 7.8cqw; height: 7.8cqw; border-radius: 50%; background: #09090c; font-size: 8cqw; font-weight: 700; line-height: 1; text-shadow: -1px 0 #25f4ee, 1px 1px #fe2c55; }
+.studio-phone-caption { position: absolute; z-index: 1; left: 3.3%; bottom: 12.2%; width: 77%; display: flex; flex-direction: column; gap: 1.1cqw; pointer-events: none; text-shadow: 0 1px 2px #0006; }
+.studio-phone-identity { display: flex; align-items: center; gap: 2.3cqw; overflow: hidden; }
+.studio-phone-identity strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 4.6cqw; line-height: 1.4; font-weight: 600; }
+.studio-phone-kind { display: inline-flex; flex-shrink: 0; align-items: center; gap: .5cqw; font-size: 3.2cqw; }
+.studio-phone-kind svg { width: 3.3cqw; height: 3.3cqw; }
+.studio-phone-title, .studio-phone-description { overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 4.2cqw; line-height: 1.35; }
+.studio-phone-title { -webkit-line-clamp: 1; }
+.studio-phone-music { display: flex; align-items: center; gap: 1.2cqw; font-size: 3.8cqw; line-height: 1.4; margin-top: 1.1cqw; }
+.studio-phone-music svg { width: 3.8cqw; height: 3.8cqw; flex-shrink: 0; }
+.studio-phone-music span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.studio-phone-bottom { position: absolute; z-index: 2; bottom: 0; left: 0; right: 0; height: 10.2%; display: flex; align-items: flex-start; justify-content: space-between; padding: 3.1cqw 5.6cqw 0; box-sizing: border-box; background: #171822; color: #55565f; font-size: 4.3cqw; font-weight: 600; pointer-events: none; }
+.studio-phone-bottom .active::after { content: ''; display: block; height: 1px; margin-top: 3.4cqw; background: #63646c; }
+.studio-phone-publish { display: grid; place-items: center; width: 9.8cqw; height: 6.5cqw; margin-top: -.2cqw; border: 1px solid #676872; border-radius: 1.3cqw; box-shadow: -1px 0 #497077, 1px 0 #794959; font-size: 6cqw; line-height: 1; }
+/* 每张图片独立对应一段细横线；透明点击区与视觉线分开，不再伪装连续播放进度。 */
+.studio-phone-progress { position: absolute; z-index: 3; display: flex; gap: var(--segment-gap, 3px); left: 2.3%; right: 2.3%; bottom: calc(10.2% - 10px); height: 20px; touch-action: none; }
+.studio-phone .studio-phone-segment { position: relative; display: block; flex: 1 1 0; min-width: 0; min-height: 0; width: 0; height: 100%; padding: 0; margin: 0; border: 0; border-radius: 0; background: transparent; color: #fff; cursor: pointer; }
+.studio-phone .studio-phone-segment::before { content: ''; position: absolute; inset: calc(50% - .4cqw) 0 auto; height: .8cqw; min-height: 1px; border-radius: 1cqw; background: #ffffff66; }
+.studio-phone .studio-phone-segment.is-current::before { background: #fff; }
+.studio-phone .studio-phone-segment:hover, .studio-phone .studio-phone-segment:active { background: transparent; opacity: 1; }
+.studio-phone .studio-phone-segment:focus-visible { outline: 1px solid #fff; outline-offset: 0; border-radius: 2px; }
+.studio-preview-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* 轨道固定当前与相邻页的相对位置，完整图片在各自页面中按 contain 展示。 */
+.studio-preview-track { position: absolute; inset: 0; display: flex; will-change: transform; }
+.studio-preview-slide { display: flex; align-items: center; justify-content: center; flex: 0 0 100%; width: 100%; height: 100%; min-width: 0; overflow: hidden; }
+.studio-preview-slide img { display: block; flex: 0 0 100%; width: 100%; height: 100%; object-fit: contain; }
+.studio-phone-stage.is-dragging, .studio-gallery-lightbox-surface.is-dragging { cursor: grabbing; }
+/* 视频保持可操作的系统控件，不被右侧装饰栏或文案拦截。 */
+.studio-phone.has-video .studio-phone-stage { z-index: 1; cursor: auto; }
+@media (max-width: 520px) {
+  .studio-gallery-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+  .studio-gallery-lightbox-surface { inset: 54px 8px; }
+  .studio-gallery-lightbox .studio-gallery-previous { left: 6px; }
+  .studio-gallery-lightbox .studio-gallery-next { right: 6px; }
+}

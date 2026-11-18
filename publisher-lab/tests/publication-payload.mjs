@@ -165,3 +165,93 @@ rejected(() => build(original, {music: {id: '303', duration: 5}}), 'PREPARATION_
 assert.equal(build(original, {creationId: 'preparation-identity'}).item.common.creation_id, 'preparation-identity');
 
 console.log('publication-payload: passed');
+
+// 新原生编辑器将已选话题插入正文；构造器复用明确完整标记，避免双写文本并保持 UTF-16 范围。
+const {buildPublicationPayload: buildNative, validateStudioDraft: validateNative} = await import('../app/platform/publication-payload.js');
+const nativeBuild = (value, extra = {}) => buildNative({draft: value, images: [image], cover, ...extra});
+{
+  const value = draft({title: '标题🙂', description: '🙂 #摄影，\n第二行 #摄影技巧 #摄影', topics: [{id: '111', name: '摄影'}], mentions: []});
+  const output = nativeBuild(value).item.common, tagged = JSON.parse(output.text_extra).find(item => item.type === 1);
+  assert.equal(output.text, '标题🙂。🙂 #摄影，\n第二行 #摄影技巧 #摄影');
+  assert.equal(output.text.slice(tagged.start, tagged.end), '#摄影');
+  assert.equal(tagged.start, output.text.indexOf('#摄影'));
+  assert.equal(value.description.trim().slice(tagged.caption_start, tagged.caption_end), '#摄影');
+  const prefixOnly = nativeBuild({...value, description: '#摄影技巧'}).item.common;
+  assert.equal(prefixOnly.text, '标题🙂。#摄影技巧 #摄影');
+  assert.throws(() => validateNative({...value, topics: [{id: '111', name: '摄影'}, {id: '222', name: '摄影'}]}), /重复/);
+}
+{
+  const value = draft({topics: [], mentions: [], settings: {...draft().settings, declarations: ['aigc']}});
+  const output = nativeBuild(value, {declaration: {id: 'aigc', label: '内容由AI生成', disabled: false}});
+  assert.deepEqual(output.item.declare, {user_declare_info: '{"choose_value":"aigc"}'});
+  assert.throws(() => nativeBuild(value), /声明未重新确认/);
+  assert.throws(() => nativeBuild(value, {declaration: {id: 'aigc', disabled: true}}), /声明未重新确认/);
+  assert.throws(() => validateNative({...value, settings: {...value.settings, declarations: ['aigc', 'marketing']}}), /一项/);
+}
+console.log('native payload: existing topic range binding, duplicate-name rejection and verified declaration serialization passed');
+
+// @ 与 # 都复用明确标记，同昵称不同用户按选择顺序绑定独立出现位置，不重复追加正文。
+{
+  const value = draft({title: '🙂标题', description: '🙂 @作者🙂，\n@同名 与 @同名 #旅行',
+    topics: [{id: '111', name: '旅行'}], mentions: [{id: '201', name: '作者🙂'}, {id: '202', name: '同名'}, {id: '203', name: '同名'}]});
+  const output = nativeBuild(value).item.common, extras = JSON.parse(output.text_extra).filter(item => item.type === 0);
+  assert.equal(output.text, '🙂标题。' + value.description);
+  assert.deepEqual(extras.map(item => item.user_id), ['201', '202', '203']);
+  assert.deepEqual(extras.map(item => output.text.slice(item.start, item.end)), ['@作者🙂', '@同名', '@同名']);
+  assert.notEqual(extras[1].start, extras[2].start);
+  for (const item of extras) assert.equal(value.description.slice(item.caption_start, item.caption_end), output.text.slice(item.start, item.end));
+  const incomplete = nativeBuild({...value, description: '@同名'}).item.common;
+  assert.equal(incomplete.text, '🙂标题。@同名 #旅行 @作者🙂 @同名');
+}
+
+// 非 BMP 字母、汉字和组合音标属于正文，不是可拆分关联标记的边界。
+for (const description of ['𠀀#旅行 @作者𠀀', '𐐀#旅行 @作者𐐀', '#旅行\u0301 @作者\u0301']) {
+  const output = nativeBuild(draft({title: '', description, topics: [{id: '111', name: '旅行'}], mentions: [{id: '201', name: '作者'}]})).item.common;
+  assert.equal(output.text, description + ' #旅行 @作者');
+  for (const item of JSON.parse(output.text_extra)) assert.ok(item.start > description.length);
+}
+console.log('native associations: mention reuse, duplicate nicknames, Unicode code-point boundaries and UTF-16 ranges passed');
+
+// 活动在编辑态关联真实话题，提交只保留一份 type1 范围，activity 使用话题 ID 而不是活动 ID。
+{
+  const activity = {id: '701', name: '官方摄影活动', topic: {id: '801', name: '摄影日常'}};
+  const value = draft({title: '🙂', description: '前文 #摄影日常 后文', topics: [{id: '801', name: '摄影日常'}], activities: [activity], mentions: []});
+  const snapshot = structuredClone(value), common = nativeBuild(value).item.common;
+  assert.equal(common.text, '🙂。前文 #摄影日常 后文');
+  assert.equal(common.activity, '["801"]'); assert.equal(common.challenges, '["801"]'); assert.equal(common.hashtag_source, 'recommend');
+  const extras = JSON.parse(common.text_extra).filter(item => item.hashtag_id === '801');
+  assert.equal(extras.length, 1); assert.equal(extras[0].type, 1);
+  assert.equal(common.text.slice(extras[0].start, extras[0].end), '#摄影日常');
+  assert.deepEqual(value, snapshot);
+  const inferred = nativeBuild({...value, topics: []}).item.common;
+  assert.equal(inferred.challenges, '["801"]', 'the activity topic remains part of the normalized payload even without a duplicate UI association');
+  const sharedTopic = nativeBuild({...value, activities: [activity, {...activity, id: '702', name: '另一官方活动'}]}).item.common;
+  assert.equal(sharedTopic.activity, '["801"]', 'activities sharing one real hashtag still submit one hashtag identity');
+  assert.throws(() => nativeBuild({...value, topics: [{id: '801', name: '伪造名称'}]}), /身份不一致/);
+  assert.throws(() => nativeBuild({...value, activities: [activity, activity]}), /重复选择/);
+  assert.throws(() => nativeBuild({...value, activities: [{...activity, topic: {id: '802', name: '摄影日常'}}]}), /同一名称/);
+  assert.throws(() => nativeBuild({...value, activities: [{...activity, topic: {id: 'invalid', name: '摄影日常'}}]}), /未经确认/);
+  assert.throws(() => nativeBuild({...value, topics: Array.from({length: 5}, (_,index) => ({id: String(900 + index), name: '其他话题' + index}))}), /最多添加 5/);
+  const video = buildNative({draft: {...value, kind: 'video', cover: null, assets: [{id: 'video-one', name: 'video.mp4', kind: 'video'}]}, video: {vid: 'video-id', width: 1080, height: 1920, duration: 20}, cover}).item.common;
+  assert.equal(video.activity, '["801"]'); assert.equal(video.caption, '前文 #摄影日常 后文');
+}
+console.log('native activities payload: merged topic identity, UTF-16 range, type1 conversion, activity IDs, duplicates and official five-topic limit passed');
+
+// 城市元数据仅用于恢复地点搜索；草稿中的附加字段不能替代当前平台核验结果。
+{
+  const location = {id: '404', name: '测试地点', cityCode: '440300', cityName: '深圳市', extra: '{"untrusted":true}', requiresNativeSelection: false};
+  const value = draft({topics: [], mentions: [], location}), original = structuredClone(value);
+  assert.deepEqual(validateNative(value).location, {id: '404', name: '测试地点', cityCode: '440300', cityName: '深圳市'});
+  const output = nativeBuild(value, {location: {id: '404', name: '测试地点', extra: '{"verified":true}'}});
+  assert.deepEqual(output.item.anchor, {poi_id: '404', poi_name: '测试地点', anchor_content: '{"verified":true}'});
+  assert.equal(JSON.stringify(output).includes('440300'), false, 'city metadata is a query hint, not a publication field');
+  assert.equal(JSON.stringify(output).includes('untrusted'), false);
+  assert.deepEqual(value, original);
+  assert.deepEqual(validateNative({...value, location: {id: '404', name: '测试地点'}}).location, {id: '404', name: '测试地点'}, 'older saved selections retain identity and can use an existing verified query record');
+  for (const patch of [{cityCode: 440300}, {cityCode: '44030'}, {cityCode: 'https://invalid.test'}, {cityName: undefined}, {cityName: ''}, {cityName: '市'.repeat(51)}]) {
+    assert.throws(() => validateNative({...value, location: {...location, ...patch}}), error => error.code === 'INVALID_DRAFT');
+  }
+  assert.throws(() => nativeBuild(value, {location: {id: '404', name: '测试地点', requiresNativeSelection: true}}), error => error.code === 'UNSUPPORTED_FEATURE');
+  assert.throws(() => nativeBuild(value, {location: {id: '405', name: '测试地点'}}), error => error.code === 'PREPARATION_MISMATCH');
+}
+console.log('native location restoration: bounded city hints, immutable draft and verified platform-only publication metadata passed');

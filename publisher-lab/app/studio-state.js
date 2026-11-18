@@ -1,5 +1,8 @@
 // 独立工作台只持久化可读的小型作品数据，不保存媒体、路径、上传凭据或平台会话。
 export const MAX_DRAFTS = 40;
+export const DRAFT_STATE_VERSION = 2;
+// 旧版最多 20000 字正文及各 50 个、每名 500 字的话题/提及；迁入正文后仍须完整保留。
+const MAX_DESCRIPTION_LENGTH = 20000 + 2 * 50 * 502;
 const kinds = new Set(['image', 'video']);
 const statuses = new Set(['published', 'scheduled', 'processing', 'failed', 'unknown']);
 
@@ -29,11 +32,22 @@ function entitiesValue(values) {
   }).slice(0, 50);
 }
 
+// activitiesValue 分开保存活动身份和发布话题身份，不持久化平台热度、详情或临时地址。
+function activitiesValue(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : []).flatMap(value => {
+    const activity = entityValue(value), topic = entityValue(value?.topic);
+    if (!activity || !topic || seen.has(activity.id)) return [];
+    seen.add(activity.id);
+    return [{...activity, topic}];
+  }).slice(0, 5);
+}
+
 // emptyDraft 创建独立作品；不预设账号，不虚构上传或发布结果。
 export function emptyDraft(kind = 'image') {
   return {
     id: newID(), name: kind === 'video' ? '未命名视频' : '未命名图文', kind,
-    assets: [], title: '', description: '', topics: [], mentions: [],
+    assets: [], title: '', description: '', aiContext: '', topics: [], mentions: [], activities: [],
     music: null, location: null, collection: null, cover: null,
     settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []},
     updatedAt: new Date().toISOString(), receipt: null,
@@ -62,7 +76,8 @@ export function sanitizeDraft(raw) {
   result.id = textValue(source.id) || result.id;
   result.name = textValue(source.name, 100) || result.name;
   result.title = textValue(source.title, 2000);
-  result.description = textValue(source.description, 20000);
+  result.description = textValue(source.description, MAX_DESCRIPTION_LENGTH);
+  result.aiContext = textValue(source.aiContext, 6000);
   const seen = new Set();
   result.assets = (Array.isArray(source.assets) ? source.assets : []).filter(asset => {
     if (!asset || !textValue(asset.id) || !kinds.has(asset.kind) || seen.has(asset.id)) return false;
@@ -71,6 +86,7 @@ export function sanitizeDraft(raw) {
   }).slice(0, 100).map(asset => ({id: textValue(asset.id), name: textValue(asset.name, 500), kind: asset.kind, ...(asset.localOnly === true ? {localOnly: true} : {})}));
   result.topics = entitiesValue(source.topics);
   result.mentions = entitiesValue(source.mentions);
+  result.activities = activitiesValue(source.activities);
   for (const key of ['music', 'location', 'collection']) result[key] = entityValue(source[key]);
   if (result.location && source.location?.cityCode) {
     result.location.cityCode = textValue(source.location.cityCode, 30);
@@ -98,7 +114,7 @@ export function sanitizeDraft(raw) {
 
 // publicationDraft 生成单次提交快照；本机草稿名称、回执等不会误入平台作品字段。
 export function publicationDraft(raw) {
-  const {receipt, updatedAt, name, ...draft} = sanitizeDraft(raw);
+  const {receipt, updatedAt, name, aiContext, ...draft} = sanitizeDraft(raw);
   if (draft.settings.publishTime === 'scheduled' && draft.settings.scheduledAt) {
     const timestamp = new Date(draft.settings.scheduledAt);
     if (Number.isFinite(timestamp.getTime())) draft.settings.scheduledAt = timestamp.toISOString();
@@ -111,15 +127,50 @@ export function contentSignature(draft) {
   return JSON.stringify(publicationDraft(draft));
 }
 
-// normalizeState 恢复本工作台数据，不读取或迁移原发布助手草稿。
+// migrateVersion1 将旧版独立话题和提及一次性转为可见正文，不修改资源身份或已有文本。
+function migrateVersion1(raw) {
+  const drafts = (Array.isArray(raw.drafts) ? raw.drafts : []).slice(0, MAX_DRAFTS).map(value => {
+    const draft = sanitizeDraft(value);
+    let body = textValue(value?.description, 20000);
+    const occupied = [];
+    for (const [values, prefix] of [[draft.topics, '#'], [draft.mentions, '@']]) {
+      for (const entity of values) {
+        const name = entity.name.trim();
+        if (!name) continue;
+        const token = prefix + name;
+        let start = -1, candidate = body.indexOf(token);
+        while (candidate >= 0) {
+          const before = Array.from(body.slice(0, candidate)).at(-1), after = Array.from(body.slice(candidate + token.length))[0];
+          const boundary = character => !character || !/[\p{L}\p{N}\p{M}_#@]/u.test(character);
+          const overlaps = occupied.some(range => candidate < range.end && candidate + token.length > range.start);
+          if (!overlaps && boundary(before) && boundary(after)) { start = candidate; break; }
+          candidate = body.indexOf(token, candidate + token.length);
+        }
+        if (start < 0) {
+          if (body && !/\s$/u.test(body)) body += ' ';
+          start = body.length;
+          body += token;
+        }
+        occupied.push({start, end: start + token.length});
+      }
+    }
+    draft.description = body;
+    return draft;
+  });
+  return {...raw, version: DRAFT_STATE_VERSION, drafts};
+}
+
+// normalizeState 先迁移本工作台旧版本，再只使用当前正文模型；不读取原发布助手草稿。
 export function normalizeState(raw) {
-  const drafts = raw?.version === 1 && Array.isArray(raw.drafts) ? raw.drafts.slice(0, MAX_DRAFTS).map(sanitizeDraft) : [];
+  const current = raw?.version === 1 ? migrateVersion1(raw) : raw;
+  const drafts = current?.version === DRAFT_STATE_VERSION && Array.isArray(current.drafts) ? current.drafts.slice(0, MAX_DRAFTS).map(sanitizeDraft) : [];
   const unique = drafts.filter((draft, index) => drafts.findIndex(item => item.id === draft.id) === index);
   if (!unique.length) unique.push(emptyDraft());
   return {
-    version: 1, activeDraftId: unique.some(draft => draft.id === raw?.activeDraftId) ? raw.activeDraftId : unique[0].id,
+    version: DRAFT_STATE_VERSION, activeDraftId: unique.some(draft => draft.id === current?.activeDraftId) ? current.activeDraftId : unique[0].id,
     drafts: unique,
-    handledTransfers: (Array.isArray(raw?.handledTransfers) ? raw.handledTransfers : []).filter(value => typeof value === 'string').slice(-50).map(value => value.slice(0, 200)),
+    aiPrompt: textValue(current?.aiPrompt, 8000),
+    handledTransfers: (Array.isArray(current?.handledTransfers) ? current.handledTransfers : []).filter(value => typeof value === 'string').slice(-50).map(value => value.slice(0, 200)),
   };
 }
 
@@ -129,7 +180,8 @@ export class StudioStore {
     this.data = normalizeState(initial);
     this.writer = writer;
     this.pending = Promise.resolve();
-    this.revision = 0;
+    // 升级结果需由界面沿用保存/失败重试流程写回，不能在尚未确认落盘时显示为已保存。
+    this.revision = initial?.version === 1 ? 1 : 0;
     this.savedRevision = 0;
   }
 

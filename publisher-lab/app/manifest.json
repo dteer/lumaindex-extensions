@@ -11,10 +11,11 @@
     "network": [
       {
         "origin": "https://creator.douyin.com",
-        "pathPrefixes": ["/web/api/media/user/info/", "/web/api/media/upload/auth/v5/", "/web/api/media/video/enable/", "/web/api/media/video/transend/", "/aweme/v1/search/challengesug/", "/web/api/v2/discover/search/", "/web/api/v2/user/recent/contact/", "/web/api/media/music/category", "/web/api/media/music/list", "/web/api/media/music/validate/", "/web/api/media/item/info/", "/web/api/media/aweme/create_v2/", "/aweme/v1/life/video_api/search/poi/", "/web/api/mix/list/"],
+        "pathPrefixes": ["/web/api/media/user/info/", "/web/api/media/upload/auth/v5/", "/web/api/media/video/enable/", "/web/api/media/video/transend/", "/aweme/v1/search/challengesug/", "/web/api/v2/discover/search/", "/web/api/v2/user/recent/contact/", "/web/api/media/music/category", "/web/api/media/music/list", "/web/api/media/music/validate/", "/web/api/media/aweme/search/post/auth", "/web/api/media/hashtag/rec/", "/web/api/media/activity/get/", "/web/api/media/activity/detail/", "/aweme/v3/user_declaration/suggestion/", "/web/api/media/item/info/", "/web/api/media/aweme/create_v2/", "/aweme/v1/life/video_api/search/poi/", "/web/api/mix/list/"],
         "methods": ["GET", "POST"],
         "useSession": true
       },
+      {"origin": "https://tsearch.amemv.com", "pathPrefixes": ["/openapi/aweme/v1/music/search/"], "methods": ["GET"], "useSession": false, "allowedHeaders": ["Agw-Auth", "Openapi-Omit-Shark"]},
       {"origin": "https://imagex.bytedanceapi.com", "pathPrefixes": ["/"], "methods": ["GET", "POST"], "useSession": false, "allowAuthorization": true},
       {"origin": "https://vod.bytedanceapi.com", "pathPrefixes": ["/"], "methods": ["GET", "POST"], "useSession": false, "allowAuthorization": true},
       {"origin": "https://*.bytedancevod.com", "pathPrefixes": ["/upload/v1/"], "methods": ["POST"], "useSession": false, "allowAuthorization": true},

@@ -52,7 +52,14 @@ export async function listCollections(params, send) {
       // 原生回显仅需要这些字段，不向 App 或缓存转交作者资料、签名封面 URL、额外信息和收费配置。
       const info = {mix_id:item.mix_id,mix_name:item.mix_name,type:0,statis:{updated_to_episode:count}};
       if (item.total_episode !== undefined) info.total_episode = item.total_episode;
-      items.push({id:item.mix_id,title:item.mix_name,order,info}); ids.add(item.mix_id);
+      // 原生下拉的“共 N 个作品”使用原始 updated_to_episode；不可把下一集 order 当作作品数。
+      // 封面仅用于本次列表展示，不进入最小发布身份 info 或草稿。
+      let thumbnailURL;
+      try {
+        const cover = new URL(item.cover_url?.url_list?.[0]);
+        if (cover.protocol === 'https:' && !cover.username && !cover.password) thumbnailURL = cover.href;
+      } catch {}
+      items.push({id:item.mix_id,title:item.mix_name,order,itemCount:count,thumbnailURL,info}); ids.add(item.mix_id);
     }
     return {ok:true,data:{items,nextCursor}};
   } catch {

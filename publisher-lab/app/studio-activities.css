@@ -1,0 +1,37 @@
+/* 活动沿用官方截图的单行卡片：灰底、黑色标题，交互及已添加状态使用浅蓝底。 */
+.studio-activities { display: flex; align-items: flex-start; gap: 20px; min-width: 0; margin: 0 0 24px; }
+.studio-activities-label { display: flex; align-items: center; gap: 6px; flex: 0 0 74px; padding-top: 15px; color: #4f5155; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.studio-activities-help { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; color: white; background: #b4b5b8; font-size: 11px; font-weight: 600; line-height: 1; cursor: help; }
+.studio-activities-body { min-width: 0; flex: 1; }
+.studio-activities-list { display: flex; gap: 12px; overflow-x: auto; overflow-y: hidden; min-width: 0; padding-bottom: 4px; scrollbar-width: thin; overscroll-behavior-x: contain; }
+.studio-activities-list[hidden] { display: none; }
+.studio-activity-card { flex: 0 0 calc((100% - 12px) / 2); min-width: 210px; box-sizing: border-box; height: 78px; padding: 12px 16px; border-radius: 6px; background: #f2f2f4; color: #242630; }
+.studio-activity-card:hover, .studio-activity-card:focus-within, .studio-activity-card.is-selected { background: #e1ebff; }
+.studio-activity-title { display: flex; align-items: center; gap: 6px; height: 21px; font-size: 14px; font-weight: 600; line-height: 21px; }
+.studio-activity-icon { flex: 0 0 13px; color: #181a22; font-size: 20px; line-height: 1; font-weight: 700; }
+.studio-activity-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-activity-footer { position: relative; min-height: 22px; margin-top: 5px; line-height: 22px; font-size: 13px; }
+.studio-activity-heat { color: #81828b; }
+.studio-activity-actions { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; opacity: 0; pointer-events: none; }
+.studio-activity-card:hover .studio-activity-actions, .studio-activity-card:focus-within .studio-activity-actions, .studio-activity-card.is-selected .studio-activity-actions { opacity: 1; pointer-events: auto; }
+.studio-activity-card:hover .studio-activity-heat, .studio-activity-card:focus-within .studio-activity-heat, .studio-activity-card.is-selected .studio-activity-heat { opacity: 0; pointer-events: none; }
+.studio-activity-add { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 0; padding: 0; min-height: 22px; font: inherit; line-height: 22px; color: #537fff; background: transparent; white-space: nowrap; }
+.studio-activity-add:hover { background: transparent; color: #3f6deb; }
+.studio-activity-add-icon { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; border: 1px solid currentColor; border-radius: 50%; box-sizing: border-box; font-size: 11px; line-height: 1; }
+.studio-activity-details { border: 0; background: transparent; padding: 0; min-height: 22px; line-height: 22px; color: #537fff; font-size: 13px; text-decoration: none; white-space: nowrap; }
+.studio-activity-details:hover { color: #3f6deb; }
+.studio-activities-status { margin: 6px 0 0; font-size: 12px; line-height: 20px; color: #8a8b95; }
+.studio-activities-pagination { display: flex; justify-content: flex-end; gap: 12px; margin-top: 4px; }
+.studio-activities-pagination[hidden] { display: none; }
+.studio-activities-pagination button { min-height: 24px; padding: 0; border: 0; background: transparent; color: #747681; font-size: 12px; }
+@media (hover: none) { .studio-activity-actions { opacity: 1; pointer-events: auto; } .studio-activity-heat { opacity: 0; pointer-events: none; } }
+@media (max-width: 560px) { .studio-activities { gap: 12px; } .studio-activities-label { flex-basis: 74px; font-size: 13px; } .studio-activity-card { min-width: 210px; } }
+
+.studio-activity-dialog { width: min(520px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); box-sizing: border-box; padding: 24px; overflow: auto; border: 0; border-radius: 8px; color: #252631; background: white; }
+.studio-activity-dialog::backdrop { background: #0006; }
+.studio-activity-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.studio-activity-dialog-heading h2 { margin: 0; font-size: 18px; line-height: 28px; overflow-wrap: anywhere; }
+.studio-activity-dialog-close { border: 0; background: none; padding: 0; min-height: 28px; width: 28px; font-size: 24px; line-height: 28px; color: #7c7d85; }
+.studio-activity-dialog-content { font-size: 14px; line-height: 24px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.studio-activity-dialog-content h3 { font-size: 14px; margin: 18px 0 8px; }
+.studio-activity-detail-topics { color: #537fff; }

@@ -64,11 +64,17 @@ export async function prepareFile(job,origin,asset,{signal}={}){
  }
 }
 
-// mapLimited 限制本机读取并发，按输入顺序返回，避免多图串行等待和无界内存占用。
+// mapLimited 限制本机读取并发并保持输入顺序；失败后停止领取新素材，
+// 等待在途读取结算再返回错误，避免调用方提前释放任务锁后仍有旧任务继续读取。
 export async function mapLimited(items,limit,read){
- const result=new Array(items.length);let next=0;
+ const result=new Array(items.length);let next=0,failed=false,failure;
  await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{
-  while(next<items.length){const index=next++;result[index]=await read(items[index]);}
+  while(!failed&&next<items.length){
+   const index=next++;
+   try{result[index]=await read(items[index]);}
+   catch(error){if(!failed){failed=true;failure=error;}}
+  }
  }));
+ if(failed)throw failure;
  return result;
 }

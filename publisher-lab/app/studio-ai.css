@@ -1,0 +1,30 @@
+/* AI 采用发布页同样的白底、浅灰字段与紧凑表单，不改变抖音编辑页布局。 */
+.ai-dialog { width: min(650px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); overflow: auto; }
+.ai-dialog .field-label { margin: 16px 0 8px; }
+.ai-image-heading, .ai-prompt-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 8px; }
+.ai-check { display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 22px; }
+.ai-check input { accent-color: #161823; flex: 0 0 auto; }
+.ai-dialog .helper { margin: 6px 0; line-height: 20px; }
+.ai-images { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 2px; }
+.ai-images[hidden] { display: none; }
+.ai-image-card { min-width: 0; }
+.ai-image-frame { position: relative; aspect-ratio: 1; border-radius: 5px; background: #f2f2f4; overflow: hidden; }
+.ai-image-frame img { width: 100%; height: 100%; object-fit: cover; }
+.ai-image-toggle { position: absolute; right: 2px; bottom: 2px; width: 28px; min-height: 28px; height: 28px; padding: 5px; border: none; background: none; border-radius: 50%; }
+.ai-image-toggle:hover { background: transparent; }
+.ai-image-circle { display: flex; align-items: center; justify-content: center; width: 17px; height: 17px; box-sizing: border-box; border: 1.5px solid #ffffff66; border-radius: 50%; background: #0000000f; font-size: 12px; font-weight: 400; line-height: 1; }
+.ai-image-toggle[aria-pressed="true"] .ai-image-circle { border-color: white; background: #1685ff; color: white; box-shadow: 0 0 0 1px #fff; }
+.ai-image-name { display: block; margin-top: 4px; font-size: 10px; color: #8b8c95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-dialog details { margin-top: 14px; }
+.ai-dialog summary { cursor: pointer; font-size: 13px; color: #747681; }
+.ai-dialog #ai-prompt { margin-top: 8px; font-size: 12px; line-height: 20px; }
+#ai-result { padding: 16px; background: #f7f7f9; }
+#ai-result .ai-result-copy { padding: 10px 0 14px 22px; }
+#ai-result p { margin: 5px 0; }
+#ai-result .ai-result-resource { padding: 12px 0; border-top: 1px solid #e8e8eb; }
+#ai-result .ai-result-resource > strong, #ai-result .ai-result-resource > p { display: block; margin-left: 22px; }
+#ai-result .ai-result-resource > strong { margin-top: 6px; font-size: 13px; font-weight: 500; }
+#ai-result-audio { width: calc(100% - 22px); height: 32px; margin: 8px 0 0 22px; }
+.ai-dialog .dialog-footer { position: sticky; bottom: -24px; padding: 12px 0; margin-top: 10px; background: white; flex-wrap: wrap; }
+#ai-cancel { margin-right: auto; }
+@media (max-width: 560px) { .ai-images { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

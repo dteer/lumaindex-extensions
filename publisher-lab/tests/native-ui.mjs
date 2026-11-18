@@ -16,13 +16,13 @@ const server = createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({code: 0, data: {items: [{id: video ? 'fixture-video' : 'fixture-image', name: video ? '界面测试视频.mp4' : '界面测试图片.jpg', mediaType: video ? 'video' : 'image'}]}})); return;
   }
-  if (url.pathname.startsWith('/api/v1/assets/fixture-image/')) {
+  if (/^\/api\/v1\/assets\/fixture-image(?:-[23])?\//.test(url.pathname)) {
     response.setHeader('Content-Type', 'image/svg+xml');
     response.end('<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200"><rect width="900" height="1200" fill="#c9d2d8"/><rect y="740" width="900" height="460" fill="#9dabb1"/><path d="M0 820 270 430 490 760 670 540 900 820Z" fill="#687d87"/><circle cx="660" cy="260" r="80" fill="#eae6d7"/><text x="450" y="1080" text-anchor="middle" fill="#fff" font-family="sans-serif" font-size="34">UI TEST FIXTURE</text></svg>'); return;
   }
-  if (url.pathname === '/api/v1/assets/fixture-image') {
+  if (/^\/api\/v1\/assets\/fixture-image(?:-[23])?$/.test(url.pathname)) {
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({code: 0, data: {id: 'fixture-image', name: '界面测试图片.jpg', mediaType: 'image', sizeBytes: 1000}})); return;
+    response.end(JSON.stringify({code: 0, data: {id: url.pathname.split('/').at(-1), name: url.pathname.endsWith('image') ? '界面测试图片.jpg' : '界面测试图片' + url.pathname.at(-1) + '.jpg', mediaType: 'image', sizeBytes: 1000}})); return;
   }
   const file = resolve(root, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
   if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
@@ -68,27 +68,48 @@ try {
     return metrics;
   }
   await page.addInitScript(({origin}) => {
-    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: {}, libraryID: 'native-ui-fixture'};
-    let hasCookies = false; const runtime = {};
+    window.pluginContext = {nativeUIAvailable: true, nativeCapabilities: {sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: {}, libraryID: 'native-ui-fixture'};
+    let active = null, loginCount = 0; const runtime = {}, profiles = [];
     window.__nativeTest = {messages: [], state: {}};
+    const status = () => ({hasCookies: active?.hasCookies === true, activeProfileId: active?.id || null, accountId: active?.accountId || null, name: active?.name || null, expiresAt: active?.expiresAt || null});
+    window.__nativeTest.expireProfile = id => { profiles.find(item => item.id === id).hasCookies = false; };
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
       window.__nativeTest.messages.push(structuredClone(message));
       if (message.op === 'persist') { if (window.__nativeTest.failPersist) throw Error('合成保存失败'); window.__nativeTest.state = structuredClone(message.value); return {ok: true}; }
       if (message.op === 'assets.select') {
         if (window.__nativeTest.holdSelection) return new Promise(resolve => { window.__nativeTest.finishSelection = result => resolve({ok: true, data: result}); });
-        return {ok: true, data: {cancelled: false, assetIDs: ['fixture-image']}};
+        return {ok: true, data: {cancelled: false, assetIDs: window.__nativeTest.nextSelection || ['fixture-image']}};
       }
-      if (message.op === 'session.status') return {ok: true, data: {hasCookies}};
-      if (message.op === 'session.login') { hasCookies = true; return {ok: true, data: {hasCookies}}; }
-      if (message.op === 'session.clear') { hasCookies = false; return {ok: true, data: {hasCookies}}; }
+      if (message.op === 'session.status') return {ok: true, data: status()};
+      if (message.op === 'session.login') {
+        if (window.__nativeTest.cancelLogin) return {ok: false, error: {code: 'SESSION_LOGIN_CANCELLED', message: '已取消网站登录，原有会话未改变。'}};
+        active = {id: 'profile-' + ++loginCount, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString(), identity: window.__nativeTest.nextAccount || {id: '123', name: '合成 UI 测试账号'}};
+        return {ok: true, data: status()};
+      }
+      if (message.op === 'session.identify') {
+        if (message.profileId !== active?.id) throw Error('Profile changed during verification');
+        const existing = profiles.find(item => item.accountId === message.accountId);
+        if (existing) { Object.assign(existing, active, {id: existing.id}); active = existing; }
+        else profiles.push(active);
+        Object.assign(active, {accountId: message.accountId, name: message.name});
+        return {ok: true, data: status()};
+      }
+      if (message.op === 'session.list') {
+        const offset = message.offset || 0, end = offset + (message.limit || 10);
+        return {ok: true, data: {items: profiles.slice(offset, end).map(({identity, ...item}) => item), activeProfileId: active?.id || null, hasMore: end < profiles.length, nextOffset: end < profiles.length ? end : null}};
+      }
+      if (message.op === 'session.select') { active = profiles.find(item => item.id === message.profileId); if (!active) throw Error('Unknown profile'); return {ok: true, data: status()}; }
+      if (message.op === 'session.clear') { const index = profiles.findIndex(item => item.id === (message.profileId || active?.id)); if (index >= 0) profiles.splice(index, 1); active = null; return {ok: true, data: status()}; }
       if (message.op === 'state.get') return {ok: true, data: message.keys ? {[message.keys]: runtime[message.keys]} : runtime};
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
       if (message.op === 'session.request') {
         const url = new URL(message.url); let data;
-        if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: '123', nickname: '合成 UI 测试账号'}};
+        if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: active.identity.id, nickname: active.identity.name}};
         else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '222', cha_name: '测试摄影话题'}]};
         else throw Error('Unexpected platform operation');
-        return {ok: true, data: {status: 200, headers: {'content-type': 'application/json'}, body: JSON.stringify(data)}};
+        const response = {ok: true, data: {status: 200, headers: {'content-type': 'application/json'}, body: JSON.stringify(data)}};
+        if (window.__nativeTest.holdAccount && url.pathname === '/web/api/media/user/info/') return new Promise(resolve => { window.__nativeTest.finishAccount = () => resolve(response); });
+        return response;
       }
       throw Error('Unexpected native op: ' + message.op);
     }}}};
@@ -109,7 +130,8 @@ try {
   await page.getByRole('button', {name: '登录抖音', exact: true}).click();
   await page.locator('#connection-label').filter({hasText: '合成 UI 测试账号'}).waitFor();
   await accountMenu();
-  assert.equal(await page.getByRole('button', {name: '重新登录', exact: true}).isVisible(), true);
+  assert.equal(await page.getByRole('button', {name: '添加账号', exact: true}).isVisible(), true);
+  assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
   await accountMenu(false);
   await page.getByRole('button', {name: '选择图库图片', exact: false}).click();
   await page.waitForFunction(() => document.body.dataset.phase === 'editing' && !document.body.classList.contains('busy'));
@@ -121,10 +143,16 @@ try {
   assert.deepEqual(selectionStart, {before: 'persist', request: {op: 'assets.select', kind: 'image', maximumCount: 35, excludeAssetIDs: []}});
   assert.equal(await page.locator('body').getAttribute('data-phase'), 'editing');
   await page.getByRole('textbox', {name: '标题', exact: false}).fill('原生会话界面测试');
+  const firstSelectionCount = await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length);
   await page.locator('#choose-cover').click();
+  await page.locator('#cover-picker[open]').waitFor();
+  assert.equal(await page.locator('#cover-picker-confirm').isDisabled(), true);
+  await page.getByRole('button', {name: '选择素材：界面测试图片.jpg', exact: true}).click();
+  assert.equal(await page.locator('#cover-picker-grid [aria-pressed=true]').count(), 1);
+  await page.locator('#cover-picker-confirm').click();
   await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts[0].cover?.assetId === 'fixture-image');
   assert.equal(await page.evaluate(() => window.__nativeTest.state.drafts[0].assets.length), 1);
-  assert.deepEqual(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').at(-1)), {op: 'assets.select', kind: 'image', maximumCount: 1, excludeAssetIDs: []});
+  assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length), firstSelectionCount, 'current-image cover selection does not reopen the library or upload anything');
   const beforeCancel = await page.evaluate(() => structuredClone(window.__nativeTest.state.drafts[0]));
   await page.evaluate(() => { window.__nativeTest.holdSelection = true; });
   await page.locator('#add-library-media').click();
@@ -137,9 +165,9 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains('busy'));
   assert.deepEqual(await page.evaluate(() => window.__nativeTest.state.drafts[0]), beforeCancel, 'cancel preserves draft, cover and assets');
   await page.getByRole('button', {name: '＃ 添加话题', exact: true}).click();
-  await page.locator('#search-query').fill('摄影'); await page.locator('#run-search').click();
-  await page.getByText('测试摄影话题', {exact: true}).waitFor();
-  await page.locator('#search-close').click();
+  await page.locator('#description').fill('#摄影');
+  await page.locator('#association-results').getByRole('option').filter({hasText: '测试摄影话题'}).waitFor();
+  await page.locator('#description').press('Escape');
   await page.getByRole('radio', {name: '好友可见', exact: true}).check();
   await page.getByRole('radio', {name: '不允许保存', exact: true}).check();
   await page.getByRole('radio', {name: '定时发布', exact: true}).check();
@@ -155,7 +183,7 @@ try {
   await page.getByRole('radio', {name: '允许保存', exact: true}).check();
   await page.getByRole('radio', {name: '立即发布', exact: true}).check();
   assert.equal(await page.locator('#schedule-fields').isVisible(), false);
-  assert.equal(await page.locator('#unsupported-declaration').isDisabled(), true);
+  assert.equal(await page.locator('#search-declaration').isDisabled(), false);
   await page.locator('#page-notice').waitFor({state: 'hidden', timeout: 7000});
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({path: output + 'studio-native-session-wide.png', fullPage: true});
@@ -186,30 +214,162 @@ try {
   await page.setViewportSize({width: 560, height: 850});
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({path: output + 'studio-publish-mobile.png', fullPage: true});
-  await page.locator('#open-media-preview').click();
-  await page.locator('.media-preview-dialog[open] .expanded-media img').waitFor();
-  const expandedBounds = await page.locator('.media-preview-dialog').boundingBox();
+  await page.locator('.studio-gallery-image').first().click();
+  await page.locator('.studio-gallery-lightbox[open] img').waitFor();
+  const expandedBounds = await page.locator('.studio-gallery-lightbox').boundingBox();
   assert.ok(expandedBounds.width <= 560 && expandedBounds.height <= 850, 'narrow-window media preview remains usable');
-  await page.getByRole('button', {name: '关闭素材预览', exact: true}).click();
+  await page.getByRole('button', {name: '关闭预览', exact: true}).click();
+  // 多账号使用真实 client/UI 与合成宿主：添加、切回、取消登录和失效会话不改作品内容。
+  const draftBeforeSwitch = await page.evaluate(() => structuredClone(window.__nativeTest.state));
+  await page.evaluate(() => { window.__nativeTest.nextAccount = {id: '456', name: '合成第二账号'}; });
+  await accountMenu();
+  await page.getByRole('button', {name: '添加账号', exact: true}).click();
+  await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
+  assert.equal(await page.locator('#account-select option').count(), 3);
+  await accountMenu();
+  const loginsBeforeSwitch = await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'session.login').length);
+  await page.locator('#account-select').selectOption('profile-1');
+  await page.locator('#connection-label').filter({hasText: '合成 UI 测试账号'}).waitFor();
+  assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'session.login').length), loginsBeforeSwitch);
+  await page.evaluate(() => { window.__nativeTest.cancelLogin = true; });
+  await accountMenu();
+  await page.getByRole('button', {name: '添加账号', exact: true}).click();
+  await page.getByText('已取消网站登录，原有会话未改变。', {exact: true}).waitFor();
+  assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
+  await page.evaluate(() => { window.__nativeTest.cancelLogin = false; window.__nativeTest.holdAccount = true; });
+  await page.locator('#account-select').selectOption('profile-2');
+  await page.waitForFunction(() => typeof window.__nativeTest.finishAccount === 'function');
+  assert.equal(await page.locator('#account-select').isDisabled(), true);
+  assert.equal(await page.locator('#prepare').isDisabled(), true);
+  await page.evaluate(() => { window.__nativeTest.holdAccount = false; window.__nativeTest.finishAccount(); });
+  await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
+  await page.evaluate(() => { window.__nativeTest.expireProfile('profile-1'); });
+  await accountMenu();
+  await page.locator('#account-select').selectOption('profile-1');
+  await page.waitForFunction(() => !document.querySelector('#account-select').disabled);
+  assert.equal(await page.locator('#account-select').inputValue(), 'profile-1');
+  assert.match(await page.locator('#account-select option:checked').textContent(), /需重新登录/);
+  assert.equal(await page.locator('#prepare').isDisabled(), true);
+  await accountMenu();
+  await page.locator('#account-select').selectOption('profile-2');
+  await page.locator('#connection-label').filter({hasText: '合成第二账号'}).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__nativeTest.state), draftBeforeSwitch);
+  await accountMenu();
+  await page.screenshot({path: output + 'studio-multiple-accounts-narrow.png'});
+  await page.setViewportSize({width: 1290, height: 900});
+  await page.screenshot({path: output + 'studio-multiple-accounts.png'});
   await accountMenu();
   await page.locator('#clear-session').click();
-  await page.getByText('临时会话已清除，本机草稿仍保留。').waitFor();
+  await page.waitForFunction(() => !document.querySelector('#account-select').disabled && document.querySelector('#account-select').value === '');
+  assert.equal(await page.locator('#account-select option').count(), 2, 'removing one account preserves the other account');
   assert.equal(await page.locator('#publish').isDisabled(), true);
   await accountMenu(false);
   const selectionCount = await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length);
   await page.evaluate(() => { window.__nativeTest.failPersist = true; });
-  await page.locator('#choose-cover').click();
+  await page.locator('#add-library-media').click();
   await page.getByText('草稿未能保存，暂不离开工作台。请先保存成功后再选择素材。', {exact: true}).waitFor();
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length), selectionCount);
   await page.evaluate(() => { window.__nativeTest.failPersist = false; window.pluginContext.nativeCapabilities.mediaSelectionVersion = 0; });
-  await page.locator('#choose-cover').click();
+  await page.locator('#add-library-media').click();
   await page.getByText('当前 App 尚不支持从来源选择素材，请更新 App 后重新打开工作台。', {exact: true}).waitFor();
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.filter(item => item.op === 'assets.select').length), selectionCount);
+  // 多图封面与移除都只修改草稿；取消不写入，保存失败保留编辑，可单独重试保存。
+  await page.evaluate(() => { window.pluginContext.nativeCapabilities.mediaSelectionVersion = 1; window.__nativeTest.nextSelection = ['fixture-image-2', 'fixture-image-3']; });
+  await page.locator('#add-library-media').click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-remove').length === 3);
+  const savedDraft = () => page.evaluate(() => window.__nativeTest.state.drafts.find(item => item.id === window.__nativeTest.state.activeDraftId));
+  const priorCover = (await savedDraft()).cover;
+  await page.locator('#choose-cover').click();
+  await page.getByRole('button', {name: '选择素材：界面测试图片3.jpg', exact: true}).click();
+  assert.equal(await page.locator('#cover-picker-grid [aria-pressed=true]').count(), 1, 'cover is single-select');
+  assert.deepEqual((await savedDraft()).cover, priorCover, 'temporary cover selection is not applied before confirmation');
+  const checkPosition = await page.locator('#cover-picker-grid .is-selected').evaluate(card => {
+    const thumb = card.querySelector('.cover-picker-preview').getBoundingClientRect(), check = card.querySelector('.cover-picker-select').getBoundingClientRect();
+    return {right: thumb.right - check.right, bottom: thumb.bottom - check.bottom, color: getComputedStyle(card.querySelector('svg')).color};
+  });
+  assert.ok(checkPosition.right >= 0 && checkPosition.right <= 6 && checkPosition.bottom >= 0 && checkPosition.bottom <= 6);
+  assert.equal(checkPosition.color, 'rgb(22, 135, 255)');
+  await page.screenshot({path: output + 'studio-current-images-cover.png'});
+  await page.getByRole('button', {name: '放大图片：界面测试图片3.jpg', exact: true}).click();
+  await page.locator('.studio-gallery-lightbox[open]').waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#cover-picker').evaluate(el => el.open), true);
+  assert.equal(await page.locator('#cover-picker-grid [aria-pressed=true]').count(), 1, 'preview leaves cover selection intact');
+  await page.locator('#cover-picker-cancel').click();
+  assert.deepEqual((await savedDraft()).cover, priorCover, 'cancel preserves the previous cover');
+  await page.locator('#choose-cover').click();
+  await page.getByRole('button', {name: '选择素材：界面测试图片3.jpg', exact: true}).click();
+  await page.locator('#cover-picker-confirm').click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelector('#cover-name').textContent === '界面测试图片3.jpg');
+  assert.equal((await savedDraft()).cover.assetId, 'fixture-image-3');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image', 'fixture-image-2', 'fixture-image-3']);
+  // 排序写入实际草稿，保持封面和预览素材身份；保存失败不丢弃当前编辑，单独重试即可。
+  const sortCover = (await savedDraft()).cover;
+  const alerts = []; page.on('dialog', async dialog => { alerts.push(dialog.message()); await dialog.accept(); });
+  const photo = name => page.getByRole('button', {name: '查看图片：' + name, exact: true});
+  const visibleOrder = () => page.locator('.studio-gallery-card').evaluateAll(cards => cards.map(card => card.dataset.assetId));
+  await photo('界面测试图片.jpg').dragTo(photo('界面测试图片3.jpg'));
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts.find(item => item.id === window.__nativeTest.state.activeDraftId).assets.at(-1).id === 'fixture-image');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-2', 'fixture-image-3', 'fixture-image']);
+  assert.deepEqual((await savedDraft()).cover, sortCover, 'reordering does not replace the selected cover or its crop');
+  assert.equal(await page.locator('.studio-phone-stage .is-current img').getAttribute('alt'), '界面测试图片3.jpg');
+  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab', {selected: true}).getAttribute('aria-label'), '查看第 2 张，共 3 张');
+  assert.equal(await page.locator('.studio-gallery-lightbox').evaluate(el => el.open), false);
+  // 移除按钮不是拖动手柄；从该按钮发起拖动不能取得图片的排序资格。
+  const removalDrag = await page.evaluateHandle(() => new DataTransfer());
+  await page.getByRole('button', {name: '移除图片：界面测试图片3.jpg', exact: true}).dispatchEvent('dragstart', {dataTransfer: removalDrag});
+  await photo('界面测试图片.jpg').dispatchEvent('drop', {dataTransfer: removalDrag});
+  assert.deepEqual(await visibleOrder(), ['fixture-image-2', 'fixture-image-3', 'fixture-image']);
+  await page.evaluate(() => { window.__nativeTest.failPersist = true; });
+  await photo('界面测试图片2.jpg').dragTo(photo('界面测试图片.jpg'));
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelector('#save-state').textContent.includes('保存失败'));
+  assert.deepEqual(await visibleOrder(), ['fixture-image-3', 'fixture-image', 'fixture-image-2']);
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-2', 'fixture-image-3', 'fixture-image']);
+  assert.deepEqual(alerts, ['合成保存失败']);
+  await page.evaluate(() => { window.__nativeTest.failPersist = false; });
+  await page.locator('#save-draft').click();
+  await page.waitForFunction(() => document.querySelector('#save-state').textContent === '已保存至本机');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-3', 'fixture-image', 'fixture-image-2']);
+  await photo('界面测试图片3.jpg').dragTo(photo('界面测试图片2.jpg'));
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelector('.studio-gallery-card').dataset.assetId === 'fixture-image');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image', 'fixture-image-2', 'fixture-image-3']);
+  assert.deepEqual((await savedDraft()).cover, sortCover);
+  await photo('界面测试图片3.jpg').focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.activeElement?.getAttribute('aria-label') === '查看图片：界面测试图片3.jpg');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image', 'fixture-image-3', 'fixture-image-2']);
+  await page.keyboard.press('Alt+ArrowRight');
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-card')[2].dataset.assetId === 'fixture-image-3');
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image', 'fixture-image-2', 'fixture-image-3']);
+  alerts.length = 0;
+  await page.getByRole('button', {name: '移除图片：界面测试图片.jpg', exact: true}).click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 2);
+  assert.equal(await page.locator('.studio-gallery-lightbox').evaluate(el => el.open), false, 'remove does not open preview');
+  assert.equal((await savedDraft()).cover.assetId, 'fixture-image-3', 'removing another image preserves cover');
+  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab').count(), 2);
+  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab', {selected: true}).getAttribute('aria-label'), '查看第 2 张，共 2 张');
+  await page.evaluate(() => { window.__nativeTest.failPersist = true; });
+  await page.getByRole('button', {name: '移除图片：界面测试图片3.jpg', exact: true}).click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 1);
+  assert.equal(await page.locator('#cover-name').textContent(), '未指定封面', 'removing cover clears its identity and crop');
+  assert.match(await page.locator('#save-state').textContent(), /保存失败/);
+  assert.deepEqual(alerts, ['合成保存失败']);
+  assert.equal((await savedDraft()).assets.length, 2, 'failed persistence does not pretend to update saved state');
+  await page.evaluate(() => { window.__nativeTest.failPersist = false; });
+  await page.locator('#save-draft').click();
+  await page.waitForFunction(() => document.querySelector('#save-state').textContent === '已保存至本机');
+  assert.equal((await savedDraft()).cover, null);
+  assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-2'], 'retry saves the same edit without removing another picture');
+  await page.getByRole('button', {name: '移除图片：界面测试图片2.jpg', exact: true}).click();
+  await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 0);
+  assert.equal(await page.locator('#choose-cover').isDisabled(), true);
+  assert.equal(await page.locator('.studio-phone-progress').isHidden(), true);
+  assert.equal((await savedDraft()).title, '原生会话界面测试', 'removing all pictures preserves the copy');
   assert.equal(await page.locator('#search-dialog').isVisible(), false);
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => JSON.stringify(x).includes('chrome-extension://'))), false);
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => x.op === 'session.request' && x.method === 'POST')), false);
   assert.deepEqual(errors, []);
   assert.equal(assetListRequests, 0, 'media selection never falls back to immediate-add asset search');
-  console.log('native UI passed: source selection, cover, cancellation, busy lock, account menu, compact official editor, focus, draft/radio persistence, 1440/1290/960/820/560; no real platform calls');
+  console.log('native UI passed: multiple accounts, expired session, cancel and busy lock, unchanged drafts, source selection, cover, compact editor, 1440/1290/960/820/560; no real platform calls');
   console.log('editor layout metrics:', JSON.stringify(layouts));
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
