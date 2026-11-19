@@ -9,7 +9,7 @@ import {chromium} from 'playwright';
 const root = fileURLToPath(new URL('../app/', import.meta.url));
 const output = fileURLToPath(new URL('../output/playwright/', import.meta.url));
 await mkdir(output, {recursive: true});
-const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="/studio.css"><link rel="stylesheet" href="/studio-activities.css"><style>body{padding:24px;background:white}#activities{max-width:850px;margin:0}</style><div id="activities"></div><script type="module">
+const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="/studio.css"><link rel="stylesheet" href="/studio-activities.css"><link rel="stylesheet" href="/studio-help.css"><style>body{padding:24px;background:white}#activities{max-width:850px;margin:0}</style><div id="activities"></div><script type="module">
 import {mountActivities} from '/studio-activities.js';
 window.fixture={scope:'account-a',draft:{id:'draft-a',kind:'image',description:'',topics:[],activities:[]},calls:[],changes:0,failCursor:null,failFirst:false,catalog:null,failDetail:false,failResolve:false,holdResolve:false,badResolve:false,resolvePending:[],hold:false,pending:[],blocked:false,supported:true};
 const item=index=>({id:String(index),name:index===1?'宝藏经验分享活动':index===2?'寡门门主脱单卡池':'官方活动'+index,topicName:'活动话题'+index,heat:index===2?419:index*12345,disabled:index===8,description:index===8?'该活动需要额外的官方选择':''});
@@ -53,6 +53,13 @@ try {
   await page.goto('http://127.0.0.1:' + server.address().port);
   await page.waitForFunction(() => window.ready && document.querySelectorAll('.studio-activity-card').length === 10);
   assert.equal(await page.evaluate(() => fixture.calls.length), 1, 'first page does not fetch unseen pages');
+  const activityHelp = page.getByRole('button', {name:'官方活动说明',exact:true});
+  await activityHelp.hover();
+  assert.equal(await page.getByRole('tooltip').isVisible(), true);
+  assert.match(await page.getByRole('tooltip').textContent(), /在作品描述中加入对应话题/);
+  await page.mouse.move(4, 4);
+  assert.equal(await page.getByRole('tooltip').count(), 0, 'leaving the activity question mark closes its shared tooltip');
+  assert.equal(await page.evaluate(() => fixture.calls.length), 1, 'help does not query the platform');
   assert.equal(await page.locator('.studio-activity-card').nth(1).locator('.studio-activity-heat').textContent(), '热度：419');
   const first = page.locator('.studio-activity-card').first();
   await first.hover();
@@ -273,6 +280,7 @@ try {
   await page.evaluate(() => { activities.dispose(); activities.dispose(); for(const finish of fixture.pending.splice(0))finish(); });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   assert.equal(await page.locator('.studio-activity-dialog').count(), 0);
+  assert.equal(await page.locator('[role=tooltip]').count(), 0, 'disposing activities also removes its shared help');
   assert.equal(await page.locator('#activities').textContent(), '');
   assert.deepEqual(errors, []);
   console.log('activities UI passed: manual refresh/replacement/retry, selection preservation, stale response isolation, real fields, topic limits, details, pagination/cache, disabled controls and narrow layout');

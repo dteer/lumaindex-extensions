@@ -27,6 +27,8 @@
           "/web/api/media/music/validate/",
           "/web/api/media/aweme/search/post/auth",
           "/web/api/media/hashtag/rec/",
+          "/aweme/v1/hotspot/search/",
+          "/aweme/v1/hotspot/recommend/",
           "/web/api/media/activity/get/",
           "/web/api/media/activity/detail/",
           "/aweme/v3/user_declaration/suggestion/",

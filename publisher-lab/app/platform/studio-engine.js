@@ -12,7 +12,7 @@ import {validateStudioDraft, buildPublicationPayload} from './publication-payloa
 import {throwIfCancelled, combineSignals, cancellableWait} from './cancellation.js';
 
 const QUERY_OPERATIONS = ['topics.search', 'users.search', 'music.search', 'locations.search', 'collections.list', 'activities.list'];
-const OPERATIONS = ['studio.session', 'declarations.list', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve', ...QUERY_OPERATIONS, 'cover.upload', 'publication.prepare', 'publication.publish', 'publication.status'];
+const OPERATIONS = ['studio.session', 'declarations.list', 'hotspots.search', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve', ...QUERY_OPERATIONS, 'cover.upload', 'publication.prepare', 'publication.publish', 'publication.status'];
 const PLATFORM_ID = /^\d{1,30}$/;
 const LOCAL_ID = /^[a-zA-Z0-9_-]{1,100}$/;
 const MUSIC_CATEGORY_TTL = 5 * 60 * 1000;
@@ -164,6 +164,22 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       Object.assign(result, {cityCode: input.cityCode, cityName: input.cityName});
       validateLocationQuery({cityCode: result.cityCode, cityName: result.cityName, keyword: result.query, page: cursor === '0' ? 1 : Number(cursor)});
     }
+    return result;
+  }
+
+  // 热点以词本身关联，不生成数字身份；图文推荐依赖完整上传，视频沿官网使用可为空的封面参数。
+  async function hotspots(params, context, origin) {
+    if (!params || typeof params !== 'object' || Array.isArray(params) || typeof (params.query ?? '') !== 'string' || (params.query ?? '').length > 500 || !['image', 'video'].includes(params.kind ?? 'image') || params.draftId !== undefined && (typeof params.draftId !== 'string' || !LOCAL_ID.test(params.draftId))) throw Error('热点查询参数无效。');
+    const query = (params.query ?? '').trim();
+    let result;
+    if (query) result = (await creator('hotspots.search', {query}, context)).data;
+    else if (params.kind === 'video') result = (await creator('hotspots.recommend', {frames: ''}, context)).data;
+    else {
+      const saved = params.draftId ? await readCache(cacheKey('uploads', origin, context.account.id, params.draftId)) : null;
+      const frames = Array.isArray(saved?.recommendationFrames) ? saved.recommendationFrames : [];
+      result = frames.length ? (await creator('hotspots.recommend', {frames: frames.join(',')}, context)).data : {items: [], nextCursor: null, message: '输入热点词搜索'};
+    }
+    await verifyReadSession(context);
     return result;
   }
 
@@ -668,7 +684,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
     throwIfCancelled(signal);
     // 发布开始后必须取得并持久化真实或未知回执；UI 不提供撤销提交的假承诺。
     const operationSignal = operation === 'publication.publish' ? undefined : signal;
-    const scope = {origin, profileId, generation, signal: operationSignal, expectedAccountId, readOnly: QUERY_OPERATIONS.includes(operation) || ['declarations.list', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve'].includes(operation)};
+    const scope = {origin, profileId, generation, signal: operationSignal, expectedAccountId, readOnly: QUERY_OPERATIONS.includes(operation) || ['declarations.list', 'hotspots.search', 'music.categories', 'music.resolve', 'music.select', 'activities.detail', 'activities.resolve'].includes(operation)};
     const scopedSend = async (url, options = {}) => {
       requireContext(scope);
       const response = await send(url, {...options, ...(profileId ? {profileId} : {}), signal: combineSignals(operationSignal, options.signal)});
@@ -682,6 +698,7 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
       let value;
       if (operation === 'studio.session') value = {connected: true, account: context.account, capabilities: capabilities()};
       else if (operation === 'declarations.list') value = await declarationOptions(params, context);
+      else if (operation === 'hotspots.search') value = await hotspots(params, context, origin);
       else if (operation === 'music.resolve') value = await resolveMusic(params, context, origin);
       else if (operation === 'music.select') value = await selectMusic(params, context);
       else if (operation === 'music.categories') { value = await musicCategories(params, context, origin); await verifyReadSession(context); }

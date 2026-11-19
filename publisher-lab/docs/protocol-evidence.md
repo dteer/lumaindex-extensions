@@ -239,3 +239,24 @@
 2026-11-18 交互精简回归：本机账号档案恢复和切换不发 `user/info`；只读查询可被换号取消，上传与真正提交继续保持账号互斥。账号错误保留已有身份、草稿字段、音乐与位置选择和 AI 文案，本地清除不发请求；已缓存音乐离线仍可尝试播放。发布状态读取独立显示查询中，允许编辑与切稿，迟到回执仅写入发起查询的草稿。宿主成功消费上传正文后通过 `consumedBodyHandle` 确认，插件省去重复删除往返；未确认消费或失败仍清理。历史网页环境清理不再作为普通请求的前置等待，同源请求只做一次目标域名检查。
 
 本次真实引擎配合合成传输的账号请求计数：图文准备 9→1，带音乐图文 15→1，视频准备（三次轮询）17→1，实际发布 4→1（发布 POST 仍恰好一次），重复发布 2→0，状态查询 3→0（只发作品查询）。成功 POST 后网络失败或页面生命周期变化仍保留已确认作品 ID 和回执；保留提交前持久化、防重复与 unknown 不自动重发。此计数并非真实平台耗时测试，没有上传或发布用户素材。
+
+### 关联热点：官方查询、选择与发布字段
+
+2026-11-19 重新读取以下官方公开静态文件，与本机此前保存的证据逐字节一致。本节是静态契约核对，不代表已经验证真实热点发布；未调用上传、发布或修改平台草稿。一次已登录页面的非空关键词只读查询已发起，但页面随后离开，未取得响应摘要，不能据此确认返回条数或字段类型。
+
+| 官方来源 | 契约位置 | 本次核对 SHA-256 |
+| --- | --- | --- |
+| [231.c96b315e.js](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-content-new/micro/static/js/async/231.c96b315e.js) | 模块 `31380`，图文热点查询、选择及说明 | `e35ec40c05b9bc077e7df9b298fdc7affbc1d03dd32d46400e20157ca219c168` |
+| [752.238ca8fe.js](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-content-new/micro/static/js/async/752.238ca8fe.js) | `imageHotspot` 字段组，上传 URI 来源及 `beforePost` | `7f1c42c367f52a404f120bdad9c6f2d215a074674552aeeb8b8ccdd09b486861` |
+| [9557.033735e6.js](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-content-new/micro/static/js/async/9557.033735e6.js) | 模块 `78371`，视频热点查询与选择 | `1bcfe1f477f4cc4260e005804f58f606890317d79310ed1b28b3e4ee593e487f` |
+| [6770.0977d9a9.js](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-content-new/micro/static/js/async/6770.0977d9a9.js) | 模块 `93620` 的 `hotspot` 字段组，视频 `beforePost` | `4afeb88aa2f20745d8933be618b1dae63275788cb2c92a50d4b05ca153e1886a` |
+
+两个类型都使用同源 `GET /aweme/v1/hotspot/search/`，参数为非空 `query` 与 `count=50`，读取根层 `sentences` 数组。选项使用 `word` 作为值和名称，`word_cover.url_list[0]` 为展示封面，`hot_value` 经过官方格式化函数显示为“在看”。这些调用方没有按热点 ID 选择，也没有游标分页参数；不能套用话题的数字 ID 模型。静态脚本直接使用返回字段，没有证明 `hot_value` 的 JSON 数字或字符串类型，适配时须按实际响应校验，不能把缺失热度当作确定的零。
+
+推荐接口为同源 `GET /aweme/v1/hotspot/recommend/`，参数 `zip_uri,aid=1128,aweme_name=aweme`，读取 `rec_sentences` 与 `all_sentences`，项的展示字段与搜索相同。图文将已有 `uploadFile` 的图片 URI 按顺序逗号拼接，只在该字符串非空时发推荐请求；空关键词不发搜索请求，而展示此前取得的推荐及全部热点。因此未上传图文没有默认热点目录的请求证据。视频组件则在封面 URI 变化时调用推荐，`zip_uri` 使用 `coverInfo.uri || ""`，存在官方主动传空 URI 的路径；不能把两种页面的触发条件混为一谈。当前图文适配只使用最近一次完整准备的图片快照，不提交文件路径、未上传的图库 ID 或历史已移除图片。
+
+选择回调直接保存字符串 `hotspot`，清除即为空字符串，没有额外的热点身份核验请求。图文 `beforePost` 在字符串非空时生成 `common.hot_sentence`；视频字段组也生成 `common.hot_sentence`。该字段位于现有 `create_v2` 的 `item.common` 中，与正文话题及 `text_extra` 独立，不自动插入正文。图文重新编辑的回填来源是 `aweme.hot_info.sentence`；两类字段组在 `scene="edit"` 时隐藏，不能把新增发布契约直接当作已发布作品修改能力。
+
+两类官网都允许在搜索无结果时展示“创建并关联热点词”，但实际可点击由账号 `permission.hotspot` 控制；无此权限显示“没有找到？换个词试试”。普通返回词的选择不位于该权限分支内。当前未验证账号的创建权限，不应默认开放任意新词创建，也不应将这个创建开关用于拒绝已查询热点的正常选择。
+
+官网问号说明原文为：“你可以申请和一个热点做关联，如果视频确实和热点非常相关，将会进入抖音热点榜，若不相关则不会生效。”图文复用了相同说明。它描述的是申请关联，选择和提交热点词不构成关联生效或进入榜单的保证。

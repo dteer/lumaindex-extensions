@@ -170,6 +170,20 @@ console.log('publication-payload: passed');
 const {buildPublicationPayload: buildNative, validateStudioDraft: validateNative} = await import('../app/platform/publication-payload.js');
 const nativeBuild = (value, extra = {}) => buildNative({draft: value, images: [image], cover, ...extra});
 {
+  const value = draft({description: '原有正文', topics: [], mentions: [], hotspot: '城市日落🙂'});
+  const before = structuredClone(value), common = nativeBuild(value).item.common;
+  assert.equal(common.hot_sentence, '城市日落🙂');
+  assert.equal(common.text, nativeBuild({...value, hotspot: ''}).item.common.text, '热点独立关联，不向正文或话题注入文字');
+  assert.equal(common.challenges, '[]'); assert.equal(common.activity, '[]');
+  assert.deepEqual(value, before);
+  assert.equal(Object.hasOwn(nativeBuild({...value, hotspot: ''}).item.common, 'hot_sentence'), false);
+  assert.equal(validateNative(value, {operations: ['hotspots.search']}).hotspot, '城市日落🙂');
+  assert.throws(() => validateNative(value, {operations: []}), error => error.code === 'UNSUPPORTED_FEATURE');
+  for (const hotspot of [123, {name: '词'}, '词'.repeat(501), '换\n行']) assert.throws(() => validateNative({...value, hotspot}), error => error.code === 'INVALID_DRAFT');
+  assert.equal(buildNative({draft: {...videoDraft, hotspot: '视频热点'}, video}).item.common.hot_sentence, '视频热点');
+}
+console.log('native hotspots payload: image/video string association, omitted empty value, unchanged text and capability validation passed');
+{
   const value = draft({title: '标题🙂', description: '🙂 #摄影，\n第二行 #摄影技巧 #摄影', topics: [{id: '111', name: '摄影'}], mentions: []});
   const output = nativeBuild(value).item.common, tagged = JSON.parse(output.text_extra).find(item => item.type === 1);
   assert.equal(output.text, '标题🙂。🙂 #摄影，\n第二行 #摄影技巧 #摄影');

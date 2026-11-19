@@ -49,9 +49,18 @@ window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>fi
 }});
 document.getElementById('description').addEventListener('input',event=>{fixture.draft.description=event.target.value;});
 controls.render();`);
+const hotspotFixture = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/studio-resources.css"><link rel="stylesheet" href="/studio-help.css"><div id="hotspot"></div><script type="module">
+import {mountHotspot} from '/studio-hotspot.js';
+window.fixture={scope:'account-a',draft:{id:'hotspot-a',kind:'image',hotspot:'原来选中的热点'},calls:[],pending:[],offline:false};
+window.controls=mountHotspot({container:document.querySelector('#hotspot'),current:()=>fixture.draft,identity:()=>fixture.scope+':'+fixture.draft.id,supports:()=>!fixture.offline,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
+  fixture.calls.push({operation,...params});
+  if(params.query==='慢')return new Promise(resolve=>fixture.pending.push(()=>resolve({items:[{name:'旧账号迟到热点'}]})));
+  return {items:[]};
+}});controls.render();window.ready=true;</script>`;
 await mkdir(output, {recursive: true});
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
+  if (url.pathname === '/resource-hotspot.html') { response.setHeader('Content-Type', 'text/html'); response.end(hotspotFixture); return; }
   if (['/resource-race.html', '/resource-cache.html', '/resource-topics.html'].includes(url.pathname)) { response.setHeader('Content-Type', 'text/html'); response.end(url.pathname === '/resource-race.html' ? paginationFixture : url.pathname === '/resource-topics.html' ? topicFixture : cacheFixture); return; }
   if (/^\/api\/v1\/assets\/fixture-(one|two)\//.test(url.pathname)) {
     response.setHeader('Content-Type', 'image/svg+xml'); response.end(picture); return;
@@ -84,7 +93,7 @@ try {
   await page.addInitScript(({origin}) => {
     const profile = {id: 'profile-resources', accountId: '123', name: '摄影日志', browserSessionAvailable: true, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString()};
     const runtime = {};
-    window.__resourcesUI = {messages: [], requests: [], state: JSON.parse(sessionStorage.getItem('resources-ui-state') || '{}')};
+    window.__resourcesUI = {messages: [], requests: [], framesAvailable:false, offline:false, state: JSON.parse(sessionStorage.getItem('resources-ui-state') || '{}')};
     window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, temporaryFilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', frontendState: window.__resourcesUI.state, libraryID: 'resources-ui-fixture'};
     const status = () => ({browserSessionAvailable: true, hasCookies: true, activeProfileId: profile.id, accountId: profile.accountId, name: profile.name, expiresAt: profile.expiresAt});
     window.webkit = {messageHandlers: {pluginUI: {postMessage: async message => {
@@ -99,13 +108,14 @@ try {
       if (message.op === 'assets.select') return {ok: true, data: {cancelled: false, assetIDs: ['fixture-one', 'fixture-two']}};
       if (message.op === 'state.get') {
         // 合成已完成上传检查点使推荐走生产接口分支；测试不上传任何文件。
-        const value = typeof message.keys === 'string' && message.keys.startsWith('studio-uploads:') ? {recommendationFrames: ['fixture-image-resource']} : runtime[message.keys];
+        const value = typeof message.keys === 'string' && message.keys.startsWith('studio-uploads:') && window.__resourcesUI.framesAvailable ? {recommendationFrames: ['fixture-image-resource']} : runtime[message.keys];
         return {ok: true, data: message.keys ? {[message.keys]: value} : runtime};
       }
       if (message.op === 'state.set') { Object.assign(runtime, message.values); return {ok: true, data: {saved: true}}; }
       if (message.op !== 'browser.request') throw Error('Unexpected native resource operation: ' + message.op);
       const url = new URL(message.url);
       window.__resourcesUI.requests.push({url: message.url, headers: message.headers, credentials: message.credentials, method: message.method, queryAtRequest: document.querySelector('#search-query')?.value});
+      if(window.__resourcesUI.offline)throw Error('合成离线，已选内容保留');
       let data;
       if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: '123', nickname: '摄影日志', avatar_thumb: {url_list: ['https://media.example.test/avatar.svg']}}};
       else if (url.pathname === '/web/api/mix/list/') data = {status_code: 0, mix_list: url.searchParams.get('cursor') === '0' ? [
@@ -120,6 +130,8 @@ try {
       ]}};
       else if (url.pathname === '/web/api/media/hashtag/rec/') data = {status_code: 0, challenge_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2203', cha_name: '海边散步', view_count: 32000}]};
       else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2202', cha_name: '摄影技巧', view_count: 21000}]};
+      else if (url.pathname === '/aweme/v1/hotspot/search/') data = {status_code:0,sentences:[{word:'城市里的温暖瞬间',hot_value:125000,word_cover:{url_list:['https://media.example.test/hotspot.svg']}},{word:'城市漫步发现新风景',hot_value:0}]};
+      else if (url.pathname === '/aweme/v1/hotspot/recommend/') data = {status_code:0,rec_sentences:[{word:'推荐的生活热点',hot_value:8900}],all_sentences:[{word:'推荐的生活热点',hot_value:8900},{word:'另一个官方热点'}]};
       else if (url.pathname === '/web/api/v2/user/recent/contact/') data = {status_code: 0, user_list: [
         {uid:'5101',nickname:'摄影同学',follower_count:139,unique_id:'photo_test',short_id:'1001',avatar_thumb:{url_list:['https://media.example.test/contact.svg']}},
         {uid:'5102',nickname:'零粉丝新朋友',follower_count:0,short_id:'1002'},
@@ -155,6 +167,68 @@ try {
 
   // 合集读取每个分页一次，后续关键词在已读候选中筛选，封面与总数来自平台真实字段。
   const requestCount = pathname => page.evaluate(path => window.__resourcesUI.requests.filter(item => new URL(item.url).pathname === path).length, pathname);
+
+  // 没有完整上传检查点时，空图文查询仅提示输入；搜索和选择不上传，也不改正文话题。
+  const hotspotField = page.getByRole('button', {name:'关联热点',exact:true});
+  const hotspotPopup = page.locator('#studio-hotspot .hotspot-popover'), hotspotInput = page.getByRole('searchbox', {name:'搜索热点词',exact:true});
+  const beforeHotspot = await page.evaluate(() => ({requests:__resourcesUI.requests.length,description:document.querySelector('#description').value,topics:__resourcesUI.state.drafts[0].topics}));
+  await hotspotField.click();
+  await hotspotPopup.locator('.resource-message').filter({hasText:'输入热点词搜索'}).waitFor();
+  assert.equal(await page.evaluate(() => __resourcesUI.requests.length), beforeHotspot.requests, 'empty image query without uploaded frames sends no platform request');
+  await hotspotInput.fill('城市');
+  await hotspotPopup.getByRole('option').filter({hasText:'城市里的温暖瞬间'}).waitFor();
+  assert.equal(await hotspotPopup.locator('.hotspot-heat').first().textContent(), '12.5万 在看');
+  assert.equal(await hotspotPopup.locator('.hotspot-heat').nth(1).textContent(), '0 在看');
+  await hotspotPopup.scrollIntoViewIfNeeded();
+  await page.screenshot({path:output+'studio-resources-hotspot.png'});
+  await hotspotInput.press('ArrowDown'); await page.keyboard.press('Enter');
+  await page.waitForFunction(() => __resourcesUI.state.drafts[0].hotspot === '城市里的温暖瞬间');
+  assert.deepEqual(await page.evaluate(() => ({description:document.querySelector('#description').value,topics:__resourcesUI.state.drafts[0].topics})), {description:beforeHotspot.description,topics:beforeHotspot.topics});
+  assert.equal(await page.evaluate(() => typeof __resourcesUI.state.drafts[0].hotspot), 'string');
+  const hotspotSearch = await page.evaluate(() => __resourcesUI.requests.find(item => new URL(item.url).pathname === '/aweme/v1/hotspot/search/'));
+  assert.equal(new URL(hotspotSearch.url).searchParams.get('query'), '城市');
+  assert.equal(new URL(hotspotSearch.url).searchParams.get('count'), '50');
+
+  // 使用真实已有检查点才读取推荐；选择仍是纯字符串，失败和离线清除均不污染其它草稿字段。
+  await page.evaluate(() => { __resourcesUI.framesAvailable=true; });
+  await hotspotField.click();
+  await hotspotPopup.getByRole('option').filter({hasText:'推荐的生活热点'}).waitFor();
+  assert.equal(await hotspotPopup.getByRole('option').count(), 2, 'recommended and complete catalogs are deduplicated by name');
+  const hotspotRecommendation = await page.evaluate(() => __resourcesUI.requests.find(item => new URL(item.url).pathname === '/aweme/v1/hotspot/recommend/'));
+  assert.equal(new URL(hotspotRecommendation.url).searchParams.get('zip_uri'), 'fixture-image-resource');
+  await page.setViewportSize({width:560,height:850});
+  await hotspotPopup.scrollIntoViewIfNeeded();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const hotspotLabelLayout = await page.locator('#studio-hotspot').evaluate(container => {
+    const label = container.querySelector('.hotspot-label'), field = container.querySelector('.resource-select');
+    const range = document.createRange(); range.selectNodeContents(label.firstChild);
+    const labelBox = label.getBoundingClientRect(), fieldBox = field.getBoundingClientRect();
+    return {lines:range.getClientRects().length, centerOffset:Math.abs(labelBox.y + labelBox.height / 2 - fieldBox.y - fieldBox.height / 2)};
+  });
+  assert.equal(hotspotLabelLayout.lines, 1, 'narrow hotspot label stays on one line');
+  assert.ok(hotspotLabelLayout.centerOffset <= 1, 'narrow hotspot label aligns vertically with its field');
+  await page.screenshot({path:output+'studio-resources-hotspot-narrow.png'});
+  await page.evaluate(() => { __resourcesUI.offline=true; });
+  await hotspotInput.fill('查询失败');
+  await hotspotPopup.locator('.resource-retry').waitFor();
+  assert.equal(await hotspotField.textContent(), '城市里的温暖瞬间');
+  assert.equal(await page.evaluate(() => __resourcesUI.state.drafts[0].hotspot), '城市里的温暖瞬间');
+  const beforeLocalClear = await page.evaluate(() => __resourcesUI.requests.length);
+  await page.getByRole('button', {name:'清除关联热点',exact:true}).click();
+  await page.waitForFunction(() => __resourcesUI.state.drafts[0].hotspot === '');
+  assert.equal(await page.evaluate(() => __resourcesUI.requests.length), beforeLocalClear, 'clearing a saved hotspot is local even while offline');
+  await page.evaluate(() => { __resourcesUI.offline=false; });
+  const hotspotHelp = page.getByRole('button', {name:'关联热点说明',exact:true});
+  await hotspotHelp.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await hotspotHelp.hover();
+  assert.equal(await page.locator('#hotspot-help-description').isVisible(), true);
+  await page.mouse.move(4,4);
+  assert.equal(await page.locator('#hotspot-help-description').isHidden(), true);
+  assert.equal(await page.evaluate(() => __resourcesUI.requests.filter(item => new URL(item.url).pathname === '/web/api/media/user/info/').length), 1, 'hotspot controls add no account checks');
+  assert.equal(await page.evaluate(() => __resourcesUI.requests.some(item => item.method !== 'GET')), false, 'hotspot browsing never uploads or publishes');
+  await page.setViewportSize({width:1290,height:1000});
+
   await page.locator('#search-collection').click();
   await page.locator('#collection-popover [role=option]').filter({hasText: '深海摄影'}).waitFor();
   assert.equal(await page.locator('#search-dialog').isVisible(), false);
@@ -411,6 +485,31 @@ try {
     {query: 'OLD', cursor: null}, {query: 'OLD', cursor: '10'}, {query: 'NEW', cursor: null},
   ]);
   await race.close();
+
+  // 热点在途请求即使忽略取消，切账号后也不能展示旧结果或改写选中值；离线清除独立可用。
+  const hotspotRace = await browser.newPage();
+  hotspotRace.on('pageerror', error => errors.push(error.message));
+  await hotspotRace.goto(origin + '/resource-hotspot.html');
+  await hotspotRace.waitForFunction(() => window.ready);
+  await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).click();
+  await hotspotRace.getByRole('searchbox', {name:'搜索热点词',exact:true}).fill('慢');
+  await hotspotRace.waitForFunction(() => fixture.pending.length === 1);
+  await hotspotRace.evaluate(() => {
+    fixture.previousDraft=fixture.draft; fixture.scope='account-b';
+    fixture.draft={id:'hotspot-b',kind:'image',hotspot:'新账号已选热点'}; controls.render();
+    for(const finish of fixture.pending.splice(0))finish();
+  });
+  await hotspotRace.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await hotspotRace.locator('.hotspot-popover').isHidden(), true);
+  assert.equal(await hotspotRace.getByRole('option').count(), 0);
+  assert.equal(await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).textContent(), '新账号已选热点');
+  assert.equal(await hotspotRace.evaluate(() => fixture.previousDraft.hotspot), '原来选中的热点');
+  const offlineHotspotCalls = await hotspotRace.evaluate(() => { fixture.offline=true; controls.render(); return fixture.calls.length; });
+  assert.equal(await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).isDisabled(), true);
+  await hotspotRace.getByRole('button', {name:'清除关联热点',exact:true}).click();
+  assert.equal(await hotspotRace.evaluate(() => fixture.draft.hotspot), '');
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), offlineHotspotCalls);
+  await hotspotRace.close();
 
   // 选项缓存以账号与作品类型隔离；草稿切换可复用分页，但不能复用另一账号候选。
   const cache = await browser.newPage();

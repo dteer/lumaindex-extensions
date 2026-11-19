@@ -40,6 +40,8 @@ function harness(shared = {}) {
       case '/aweme/v3/user_declaration/suggestion/': data = {status_code: 0, data: state.declarations || {options: [], block_type: 0}}; break;
       case '/web/api/mix/list/': data = state.collectionPage?.(url) ?? {status_code: 0, has_more: 0, cursor: '0', mix_list: [{mix_id: '501', mix_name: '合成合集', type: 0, status: {status: 0}, statis: {updated_to_episode: 2}, cover_url: {url_list: ['https://media.example.test/fixture-collection-cover.jpg']}}]}; break;
       case '/web/api/media/hashtag/rec/': data = {status_code: 0, challenge_list: [{cid: '222', cha_name: '真实候选', view_count: 123}]}; break;
+      case '/aweme/v1/hotspot/search/': data = {status_code: 0, sentences: [{word: '城市日落', hot_value: 123}]}; break;
+      case '/aweme/v1/hotspot/recommend/': data = {status_code: 0, rec_sentences: [{word: '推荐热点'}], all_sentences: [{word: '全部热点'}]}; break;
       case '/web/api/media/activity/get/': data = {status_code: 0, activity_list: state.activities ?? [{activity_id: '701', activity_name: '官方摄影活动', activity_status: 1, challenge: ['摄影日常'], challenge_ids: ['801'], hot_score: 419}]}; break;
       case '/web/api/media/activity/detail/': data = state.activityDetail ?? {status_code: 0, activity_info: {activity_id: '701', activity_name: '官方摄影活动'}, activity_description: '平台活动说明', topics: ['摄影日常'], topics_ids: ['801']}; break;
       case '/web/api/media/upload/auth/v5/': data = {status_code: 0, auth: JSON.stringify({AccessKeyID: 'synthetic-id', SecretAccessKey: 'temporary-secret', SessionToken: 'temporary-token', ExpiredTime: '2060-01-01T00:00:00Z'})}; break;
@@ -76,6 +78,59 @@ function harness(shared = {}) {
   const run = (operation, params = {}, context = {}) => engine.dispatch(operation, params, {origin, profileId: state.profile, ...context});
   return {run, engine, state, values};
 }
+
+// 热点为独立字符串关联，普通读取不查远端账号；完整图文快照只用于同账号同草稿推荐。
+{
+  const h = harness({sessionProfiles: true}), requests = [];
+  h.state.onRequest = url => requests.push(new URL(url));
+  assert.ok(h.engine.capabilities().operations.includes('hotspots.search'));
+  const empty = await h.run('hotspots.search', {query: '', kind: 'image', draftId: 'draft-native'});
+  assert.deepEqual(empty, {items: [], nextCursor: null, message: '输入热点词搜索'});
+  assert.equal(h.state.paths.length, 0, '图文上传前不虚构推荐或额外联网检查账号');
+  for (const kind of ['image', 'video']) {
+    const result = await h.run('hotspots.search', {query: '日落', kind});
+    assert.deepEqual(result.items, [{name: '城市日落', heat: 123}]);
+    assert.equal(result.nextCursor, null);
+  }
+  assert.equal(h.state.paths.includes('/web/api/media/user/info/'), false);
+  const recommendedVideo = await h.run('hotspots.search', {kind: 'video', query: ''});
+  assert.equal(recommendedVideo.items[0].name, '推荐热点');
+  assert.equal(requests.at(-1).searchParams.get('zip_uri'), '');
+  const priorHotspotReads = h.state.paths.filter(path => path.includes('/hotspot/')).length;
+  const value = draft({hotspot: '城市日落'}), prepared = await h.run('publication.prepare', {draft: value});
+  assert.equal(preparedRecord(h, prepared).payload.item.common.hot_sentence, '城市日落');
+  assert.equal(preparedRecord(h, prepared).draft.hotspot, '城市日落');
+  assert.equal(h.state.paths.filter(path => path.includes('/hotspot/')).length, priorHotspotReads, '准备不重新查询已选热点词或构造来源池');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/user/info/').length, 1, '准备只保留原有入口账号核验');
+  await h.run('publication.publish', {preparationId: prepared.preparationId, requestId: 'hotspot-submit', expectedAccountId: '123', confirmed: true});
+  assert.equal(h.state.posts[0].item.common.hot_sentence, '城市日落');
+  assert.equal(h.state.paths.filter(path => path.includes('/hotspot/')).length, priorHotspotReads, '提交使用固定快照，不增加热点查询');
+  const recommended = await h.run('hotspots.search', {query: '', kind: 'image', draftId: value.id});
+  assert.deepEqual(recommended.items, [{name: '推荐热点'}, {name: '全部热点'}]);
+  assert.equal(requests.at(-1).searchParams.get('zip_uri'), 'tos/native-0.jpg');
+  const reads = h.state.paths.length;
+  assert.deepEqual((await h.run('hotspots.search', {kind: 'image', draftId: 'another-draft'})).items, []);
+  h.state.hostAccount = h.state.account = '456';
+  assert.deepEqual((await h.run('hotspots.search', {kind: 'image', draftId: value.id})).items, []);
+  assert.equal(h.state.paths.length, reads, '不同草稿/账号不能复用旧上传推荐');
+  for (const params of [{query: {}}, {query: '词'.repeat(501)}, {kind: 'other'}, {draftId: 123}]) await assert.rejects(h.run('hotspots.search', params), /热点查询参数/);
+}
+for (const reason of ['cancel', 'account-change']) {
+  const h = harness({sessionProfiles: true}), controller = new AbortController();
+  let finish, start;
+  const started = new Promise(resolve => { start = resolve; });
+  h.state.onRequest = async url => {
+    if (!url.pathname.includes('/hotspot/')) return;
+    start(); await new Promise(resolve => { finish = resolve; });
+  };
+  const pending = h.run('hotspots.search', {query: '日落'}, {signal: controller.signal, expectedAccountId: '123'});
+  const rejection = assert.rejects(pending, error => reason === 'cancel' ? error.name === 'AbortError' : error.code === 'ACCOUNT_CHANGED');
+  await started;
+  if (reason === 'cancel') controller.abort(); else h.state.profile = 'profile-456';
+  finish(); await rejection;
+  assert.equal(h.state.storageWrites, 0, '取消或换号的热点结果不能写持久化状态');
+}
+console.log('native hotspots engine: fixed string payload, no extra account/hotspot verification, complete snapshot recommendation and cancellation/account isolation passed');
 {
   const h = harness();
   assert.equal((await h.run('studio.session')).account.id, '123');

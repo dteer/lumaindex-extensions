@@ -56,6 +56,14 @@ assert.deepEqual(withActivity.activities, [{id: '601', name: '徒步分享活动
 assert.deepEqual(publicationDraft(withActivity).activities, withActivity.activities, '活动身份和话题身份分别进入提交快照');
 assert.notEqual(contentSignature(withActivity), signature, '活动变化使上传准备失效');
 assert.deepEqual(sanitizeDraft({...selected, activities: [{id: '601', name: '缺少话题'}]}).activities, []);
+const withHotspot = sanitizeDraft({...selected, hotspot: '城市日落🙂'});
+assert.equal(withHotspot.hotspot, '城市日落🙂');
+assert.equal(publicationDraft(withHotspot).hotspot, '城市日落🙂');
+assert.notEqual(contentSignature(withHotspot), signature, '热点选择必须使旧准备快照失效');
+assert.notEqual(contentSignature(withHotspot), contentSignature({...withHotspot, hotspot: ''}), '移除热点也使旧准备快照失效');
+assert.deepEqual(sanitizeDraft(withHotspot), withHotspot, '热点字符串保存后恢复不变');
+assert.equal(sanitizeDraft({...selected, hotspot: {id: '1', name: '伪造结构', url: 'https://synthetic.invalid'}}).hotspot, '');
+assert.equal(sanitizeDraft(selected).hotspot, '', '旧草稿无需迁移即可保持未关联热点');
 for (const patch of [
   {description: selected.description + '#新内容'}, {topics: [{id: '103', name: '其他话题'}]},
   {music: {id: '302', name: '其他音乐'}}, {location: {...selected.location, id: '502'}},

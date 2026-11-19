@@ -37,6 +37,12 @@ return async function creatorRequest(operation, params = {}) {
       case 'topics.recommend':
         if (typeof params.frames !== 'string' || !params.frames || params.frames.length > 20000 || /[\s?#\\]/u.test(params.frames) || params.frames.includes('://')) throw Error('推荐话题需要本次作品已上传的图片资源。');
         path = '/web/api/media/hashtag/rec/'; query.frames = params.frames; break;
+      case 'hotspots.search':
+        if (!text(params.query).trim() || params.query.length > 500) throw Error('请输入热点词搜索。');
+        path = '/aweme/v1/hotspot/search/'; query = {query: params.query.trim(), count: 50}; break;
+      case 'hotspots.recommend':
+        if (typeof params.frames !== 'string' || params.frames.length > 20000 || /[\s?#\\]/u.test(params.frames) || params.frames.includes('://')) throw Error('热点推荐素材参数无效。');
+        path = '/aweme/v1/hotspot/recommend/'; query = {zip_uri: params.frames, aid: 1128, aweme_name: 'aweme'}; break;
       case 'activities.list':
         if (!['0', '1'].includes(String(params.cursor ?? '0')) || text(params.query).trim()) throw Error('活动目录暂不支持分页或远端筛选，请重新打开活动列表。');
         // 实机确认外部目录忽略 page/size 且没有续页字段；只请求一次并限制完整响应，不伪造分页。
@@ -113,6 +119,21 @@ return async function creatorRequest(operation, params = {}) {
       if (!Array.isArray(topics)) throw Error('话题列表格式已变化，请重新查询。');
       return {ok: true, data: {items: topics.filter(x => identifier(x.cid) && text(x.cha_name)).map(x => ({id: x.cid, name: x.cha_name,
         description: text(x.entrance_desc).slice(0, 100), viewCount: Number.isFinite(x.view_count) && x.view_count >= 0 ? x.view_count : undefined})), nextCursor: null}};
+    }
+    if (operation === 'hotspots.search' || operation === 'hotspots.recommend') {
+      const recommended = data.rec_sentences === undefined ? [] : data.rec_sentences, all = data.all_sentences === undefined ? [] : data.all_sentences;
+      if (operation === 'hotspots.search' ? !Array.isArray(data.sentences) : !Array.isArray(recommended) || !Array.isArray(all)) throw Error('热点列表格式已变化，请重新查询。');
+      const sentences = operation === 'hotspots.search' ? data.sentences : [...recommended, ...all];
+      const names = new Set(), items = [];
+      for (const value of sentences) {
+        const name = text(value?.word).trim();
+        if (!name || name.length > 500 || names.has(name)) continue;
+        names.add(name);
+        const thumbnailURL = mediaURL(value.word_cover?.url_list?.[0]);
+        items.push({name, ...(Number.isFinite(value.hot_value) && value.hot_value >= 0 ? {heat: value.hot_value} : {}),
+          ...(thumbnailURL ? {thumbnailURL} : {})});
+      }
+      return {ok: true, data: {items, nextCursor: null}};
     }
     if (operation === 'activities.list') {
       if (!Array.isArray(data.activity_list) || data.activity_list.length > 200) throw Error('活动目录格式或数量已变化，请在创作者中心核对活动。');

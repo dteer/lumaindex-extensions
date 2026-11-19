@@ -1,4 +1,5 @@
 import {topicKey} from './studio-state.js';
+import {mountSettingHelp} from './studio-help.js';
 
 /** 构造纯文本活动控件，平台标题和详情不作为 HTML 执行。 */
 function node(tag, className = '', text) {
@@ -39,8 +40,8 @@ export function mountActivities({container, current, identity, cacheScope = iden
   document.body.append(detailDialog);
   container.classList.add('studio-activities');
   const label = node('div', 'studio-activities-label', '官方活动');
-  const help = node('span', 'studio-activities-help', '?');
-  help.title = '添加活动时会在作品描述中加入对应话题，发布前仍需确认。'; help.setAttribute('aria-label', help.title);
+  const help = node('button', 'studio-activities-help', '?');
+  help.setAttribute('aria-label', '官方活动说明');
   label.append(help);
   const body = node('div', 'studio-activities-body');
   const list = node('div', 'studio-activities-list');
@@ -51,6 +52,7 @@ export function mountActivities({container, current, identity, cacheScope = iden
   const more = node('button', 'studio-activities-more', '加载更多活动'); more.type = 'button'; more.hidden = true;
   const refresh = node('button', 'studio-activities-refresh', '刷新'); refresh.type = 'button'; refresh.setAttribute('aria-label', '刷新官方活动');
   actions.append(retry, more, refresh); body.append(list, status, actions); container.replaceChildren(label, body);
+  const helpControl = mountSettingHelp(help, {text: '添加活动时会在作品描述中加入对应话题，发布前仍需确认。'});
 
   /** 取消当前账号的所有在途页；旧页面即使忽略取消也不能进入下一账号的缓存。 */
   function clearPages() {
@@ -316,7 +318,7 @@ export function mountActivities({container, current, identity, cacheScope = iden
     /** 卸载时取消所有只读请求与监听，不清除用户选择或草稿正文。 */
     dispose() {
       if (disposed) return;
-      close(); disposed = true; clearPages(); listeners.abort(); resize.disconnect(); detailDialog.remove(); container.replaceChildren();
+      close(); disposed = true; clearPages(); listeners.abort(); resize.disconnect(); helpControl.destroy(); detailDialog.remove(); container.replaceChildren();
     },
   };
 }

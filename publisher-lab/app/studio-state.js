@@ -57,7 +57,7 @@ export function emptyDraft(kind = 'image') {
   return {
     id: newID(), name: kind === 'video' ? '未命名视频' : '未命名图文', kind,
     assets: [], title: '', description: '', aiContext: '', topics: [], mentions: [], activities: [],
-    music: null, location: null, collection: null, cover: null,
+    hotspot: '', music: null, location: null, collection: null, cover: null,
     settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []},
     updatedAt: new Date().toISOString(), receipt: null,
   };
@@ -96,6 +96,7 @@ export function sanitizeDraft(raw) {
   result.topics = entitiesValue(source.topics, true);
   result.mentions = entitiesValue(source.mentions);
   result.activities = activitiesValue(source.activities);
+  result.hotspot = textValue(source.hotspot, 500).trim();
   for (const key of ['music', 'location', 'collection']) result[key] = entityValue(source[key]);
   if (result.location && source.location?.cityCode) {
     result.location.cityCode = textValue(source.location.cityCode, 30);

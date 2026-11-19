@@ -65,6 +65,44 @@ async function nativeRequest(operation, params, replies) {
   return {result, calls};
 }
 
+// 热点使用平台词条而非数字身份，推荐在前按原词去重，不虚构热度或封面。
+{
+  const {result, calls} = await nativeRequest('hotspots.search', {query: ' 城市日落 '}, [{status_code: 0, sentences: [
+    {word: '城市日落', hot_value: 120, word_cover: {url_list: ['https://media.example.test/hotspot.jpg']}},
+    {word: '城市日落', hot_value: 999}, {word: '周末出游', hot_value: 0},
+    {word: '没有热度', hot_value: '123', word_cover: {url_list: ['javascript:alert(1)']}}, {word: ''},
+  ]}]);
+  assert.equal(result.ok, true); assert.equal(calls.length, 1);
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, '/aweme/v1/hotspot/search/');
+  assert.deepEqual(Object.fromEntries(url.searchParams), {query: '城市日落', count: '50'});
+  assert.deepEqual(result.data, {items: [
+    {name: '城市日落', heat: 120, thumbnailURL: 'https://media.example.test/hotspot.jpg'},
+    {name: '周末出游', heat: 0}, {name: '没有热度'},
+  ], nextCursor: null});
+  assert.equal(calls[0].options.method, 'GET'); assert.equal(calls[0].options.credentials, 'include');
+}
+{
+  const {result, calls} = await nativeRequest('hotspots.recommend', {frames: 'tos/image-one,tos/image-two'}, [{status_code: 0,
+    rec_sentences: [{word: '推荐热点', hot_value: 5}], all_sentences: [{word: '推荐热点', hot_value: 8}, {word: '全部热点'}]}]);
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, '/aweme/v1/hotspot/recommend/');
+  assert.deepEqual(Object.fromEntries(url.searchParams), {zip_uri: 'tos/image-one,tos/image-two', aid: '1128', aweme_name: 'aweme'});
+  assert.deepEqual(result.data.items, [{name: '推荐热点', heat: 5}, {name: '全部热点'}]);
+}
+for (const response of [{status_code: 0}, {status_code: 0, all_sentences: [{word: '视频热点'}]}]) {
+  const {result, calls} = await nativeRequest('hotspots.recommend', {frames: ''}, [response]);
+  assert.equal(result.ok, true, '官网视频推荐允许空zip_uri及省略推荐数组');
+  assert.equal(new URL(calls[0].url).searchParams.get('zip_uri'), '');
+  assert.deepEqual(result.data.items, response.all_sentences ? [{name: '视频热点'}] : []);
+}
+for (const query of ['', ' ', 123, '词'.repeat(501)]) {
+  const {result, calls} = await nativeRequest('hotspots.search', {query}, []);
+  assert.equal(result.ok, false); assert.equal(calls.length, 0);
+}
+assert.equal((await nativeRequest('hotspots.search', {query: '词'}, [{status_code: 0, sentences: {}}])).result.ok, false);
+console.log('native hotspots API: official search/recommend parameters, string identity, ordered deduplication and absent metadata passed');
+
 // 最近联系人与搜索均直接返回头像、粉丝数和抖音号，不为展示另查账号。
 for (const query of ['', '合成好友']) {
   const {result, calls} = await nativeRequest('users.search', {query}, [{status_code: 0, user_list: [

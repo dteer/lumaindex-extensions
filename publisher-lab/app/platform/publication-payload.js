@@ -141,6 +141,7 @@ export function validateStudioDraft(draft, capabilities) {
   if (new Set(assets.map(asset => asset.id)).size !== assets.length) fail('不能重复添加同一素材。');
   const title = text(draft.title, '标题', limit(capabilities, 'titleLength', 20));
   const description = text(draft.description, '正文', limit(capabilities, 'descriptionLength', 1000), true);
+  const hotspot = text(draft.hotspot ?? '', '热点', 500).trim();
   const topics = topicIdentities(draft.topics ?? []);
   if (!Array.isArray(draft.activities ?? [])) fail('官方活动列表无效。');
   const activities = (draft.activities ?? []).map(value => ({...identity(value, '官方活动'), topic: identity(value.topic, '活动话题')}));
@@ -158,8 +159,9 @@ export function validateStudioDraft(draft, capabilities) {
   if (topics.some(topic => topic.id !== '0')) requireOperation(capabilities, 'topics.search', '话题关联');
   if (mentions.length) requireOperation(capabilities, 'users.search', '@ 用户');
   if (activities.length) requireOperation(capabilities, 'activities.resolve', '官方活动');
+  if (hotspot) requireOperation(capabilities, 'hotspots.search', '热点关联');
   const result = {id: draft.id, name: text(draft.name ?? '', '作品名称', 200), kind: draft.kind,
-    assets, title, description, topics, activities, mentions, music: null, location: null, collection: null, cover: null};
+    assets, title, description, topics, activities, mentions, hotspot, music: null, location: null, collection: null, cover: null};
   for (const [key, label, operation] of [['music', '配乐', 'music.search'],
     ['location', '地点', 'locations.search'], ['collection', '合集', 'collections.list']]) {
     if (draft[key] !== undefined && draft[key] !== null) {
@@ -284,6 +286,7 @@ export function buildPublicationPayload({draft, images = [], video, cover, locat
     ...publicationText(normalized), visibility_type: VISIBILITY[normalized.settings.visibility],
     download: normalized.settings.download === 'allow' ? 1 : 0};
   if (normalized.settings.publishTime === 'scheduled') common.timing = Math.floor(Date.parse(normalized.settings.scheduledAt) / 1000);
+  if (normalized.hotspot) common.hot_sentence = normalized.hotspot;
   const item = {common};
   const declarationID = normalized.settings.declarations[0];
   if (declarationID) {

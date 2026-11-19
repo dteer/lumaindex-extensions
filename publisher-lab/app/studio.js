@@ -11,6 +11,7 @@ import {mountMusicDrawer, mountMusicCategories} from './studio-music.js';
 import {mountSavedMusicPreview} from './studio-saved-music.js';
 import {mountDescriptionHighlight} from './studio-description.js';
 import {mountActivities} from './studio-activities.js';
+import {mountHotspot} from './studio-hotspot.js';
 import {mountSettingHelp} from './studio-help.js';
 import {mountPreparationProgress} from './studio-progress.js';
 import {mountAccountSelector} from './studio-account-selector.js';
@@ -24,6 +25,7 @@ const operationNames = {
   'publication.prepare': '素材上传与检查', 'publication.publish': '最终发布', 'publication.status': '发布状态',
   'topics.search': '真实话题', 'users.search': '提及用户', 'music.search': '推荐音乐与搜索', 'music.categories': '音乐分类', 'music.select': '保存选曲资料', 'music.resolve': '恢复已选音乐', 'declarations.list': '自主声明',
   'activities.list': '官方活动', 'activities.detail': '活动详情', 'activities.resolve': '活动话题核验',
+  'hotspots.search': '关联热点',
   'locations.search': '城市与地点', 'collections.list': '普通合集', 'cover.upload': '图库图片封面', 'cover.frames': '视频帧封面',
 };
 const receiptTitles = {published: '作品已发布', scheduled: '已提交定时发布', processing: '平台正在处理', failed: '发布未完成', unknown: '发布结果待确认'};
@@ -100,6 +102,13 @@ const resources = mountResourceControls({
   blocked: () => busy || connecting,
   changed: () => { markChanged(); renderResources(); },
   selectCollection,
+});
+
+// hotspot 仅关联平台返回的热点词，选择和清除沿用草稿自动保存。
+const hotspot = mountHotspot({container: $('studio-hotspot'), current, supports,
+  identity: () => `${current().id}:${current().kind}:${session.activeProfileId || ''}:${session.account?.id || ''}`,
+  blocked: () => busy || connecting, request: (...args) => client.request(...args),
+  changed: () => { markChanged(); renderResources(); },
 });
 
 // descriptionHighlight 只为已绑定身份的正文标记绘制底色，保留原生输入与实际字符数。
@@ -596,7 +605,7 @@ function renderResources() {
   $('music-name').textContent = current().music?.name || '点击添加适合作品风格音乐';
   $('clear-music').hidden = !current().music;
   savedMusicPreview.render();
-  resources.render(); renderCover();
+  resources.render(); hotspot.render(); renderCover();
 }
 
 // fillOptions 用横向单选组展示账号允许值，草稿仍保存原有设置字段。
@@ -771,7 +780,7 @@ function renderActions() {
   $('refresh-publication').textContent = $('status-shortcut').textContent = queryingStatus ? '查询中…' : '查询状态';
   $('status-shortcut').hidden = !current().receipt?.requestId;
   $('prepare').hidden = !!current().receipt?.requestId && current().receipt?.status !== 'failed';
-  activities.render();
+  activities.render(); hotspot.render();
 }
 
 // renderReceipt 仅将明确的 published 状态称为已发布，处理中和网络未知保持独立。
@@ -839,7 +848,7 @@ function acceptSession(value = {}) {
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
   }
   aiPanel.sync();
-  activities.render();
+  activities.render(); hotspot.render();
   renderSettings(); renderResources(); renderConnection(value.message || '');
 }
 
@@ -1346,7 +1355,7 @@ async function cropCover() {
 // render 绑定当前草稿的完整表单；普通打字仅刷新相关区域避免丢失光标。
 function render() {
   aiPanel.sync();
-  activities.render();
+  activities.render(); hotspot.render();
   const draft = current();
   if (renderedDraftId !== draft.id) {
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
@@ -1497,7 +1506,7 @@ function bindEvents() {
   window.addEventListener('pagehide', () => accountSelector.dispose());
   window.addEventListener('luma:close-request', event => { event.preventDefault(); void closeHost(true); });
   window.addEventListener('beforeunload', event => { if (busy || storageError || store.savedRevision < store.revision) { event.preventDefault(); event.returnValue = ''; } });
-  window.addEventListener('pagehide', () => { for (const controller of statusQueries.values()) controller.abort(); savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); activities.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
+  window.addEventListener('pagehide', () => { for (const controller of statusQueries.values()) controller.abort(); savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); activities.dispose(); hotspot.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
 }
 
 // start 加载当前草稿与素材，不在初始化时启动执行模块或发送平台请求。

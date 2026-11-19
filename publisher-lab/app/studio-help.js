@@ -1,4 +1,4 @@
-// 设置说明只在按住期间显示；不读取或修改草稿，也不调用宿主或网络。
+// 设置说明随悬停或键盘聚焦显示；不读取或修改草稿，也不调用宿主或网络。
 let nextHelpID = 0;
 
 // mountSettingHelp 兼容原来的 span；返回真实按钮和销毁入口，便于页面初始化与卸载。
@@ -16,7 +16,7 @@ export function mountSettingHelp(trigger, {text, id} = {}) {
   button.type = 'button';
   button.classList.add('setting-help');
   button.removeAttribute('title');
-  if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', '设置说明，按住查看');
+  if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', '设置说明');
   const tooltip = document.createElement('div');
   tooltip.id = id || `setting-help-${++nextHelpID}`;
   tooltip.className = 'setting-help-tooltip';
@@ -27,7 +27,7 @@ export function mountSettingHelp(trigger, {text, id} = {}) {
   const previousDescription = button.getAttribute('aria-describedby');
   button.setAttribute('aria-describedby', [previousDescription, tooltip.id].filter(Boolean).join(' '));
   const listeners = new AbortController();
-  let pointer = null, key = null;
+  let pointer = null;
 
   // 先测量浮层，再约束到视口内；固定定位不改变设置行和选项的位置。
   function show() {
@@ -42,18 +42,22 @@ export function mountSettingHelp(trigger, {text, id} = {}) {
     tooltip.style.visibility = '';
   }
 
-  // 松开、取消或离开页面立即关闭；先清状态再释放捕获，避免 lostpointercapture 重入。
+  // 离开问号或页面立即关闭；触摸释放前清状态，避免 lostpointercapture 重入。
   function close() {
     const released = pointer;
-    pointer = null; key = null;
+    pointer = null;
     tooltip.hidden = true;
     if (released !== null && button.hasPointerCapture?.(released)) button.releasePointerCapture(released);
   }
 
   // 所有监听同生命周期移除，避免反复挂载积累页面级事件。
   function listen(target, type, handler, capture = false) { target.addEventListener(type, handler, {capture, signal: listeners.signal}); }
+  listen(button, 'pointerenter', event => { if (event.pointerType !== 'touch') show(); });
+  listen(button, 'pointerleave', event => { if (event.pointerType !== 'touch') close(); });
+  listen(button, 'focus', show);
   listen(button, 'pointerdown', event => {
-    if (event.button !== 0 || event.isPrimary === false || pointer !== null) return;
+    if (event.pointerType !== 'touch' || event.button !== 0 || event.isPrimary === false || pointer !== null) return;
+    event.preventDefault(); // 触摸松开后不通过兼容鼠标事件重新聚焦并留下浮层。
     pointer = event.pointerId;
     button.setPointerCapture?.(pointer);
     show();
@@ -62,12 +66,8 @@ export function mountSettingHelp(trigger, {text, id} = {}) {
   listen(button, 'lostpointercapture', close);
   listen(button, 'keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); close(); return; }
-    if (![' ', 'Enter'].includes(event.key)) return;
-    event.preventDefault();
-    if (event.repeat || key !== null) return;
-    key = event.key; show();
+    if ([' ', 'Enter'].includes(event.key)) event.preventDefault();
   });
-  listen(window, 'keyup', event => { if (event.key === key) { event.preventDefault(); close(); } }, true);
   listen(button, 'click', event => { event.preventDefault(); event.stopPropagation(); });
   listen(button, 'contextmenu', event => event.preventDefault());
   for (const [target, type, capture] of [[button, 'blur'], [window, 'blur'], [window, 'scroll', true], [window, 'resize'], [window, 'pagehide']]) listen(target, type, close, capture);

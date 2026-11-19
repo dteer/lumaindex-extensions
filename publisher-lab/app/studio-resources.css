@@ -50,6 +50,11 @@
 .music-field .inline-actions { gap: 0; }
 .music-field #music-name { flex: 1; }
 .extended-panel .location-field-row { margin-top: 24px; }
+.hotspot-field-row { margin-top: 24px; }
+.hotspot-label { display: flex; align-items: center; gap: 4px; min-height: 36px; font-size: 14px; white-space: nowrap; }
+.hotspot-popover .resource-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hotspot-heat { flex-shrink: 0; color: #999aa2; font-size: 12px; }
+@media (max-width: 600px) { .hotspot-label { gap: 3px; font-size: 13px; } }
 .collection-fields { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
 .collection-kind { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 8px 12px; border-radius: 4px; background: #f3f3f5; color: #33343d; font-size: 14px; }
 .collection-kind::after { content: ''; width: 7px; height: 7px; border-right: 2px solid #7b7c85; border-bottom: 2px solid #7b7c85; transform: rotate(45deg); margin: 0 2px 4px 10px; }
