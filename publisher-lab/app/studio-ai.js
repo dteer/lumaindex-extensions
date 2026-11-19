@@ -41,9 +41,9 @@ function currentBinding(getCurrent) {
   return {draftId: value.draftId, accountId: typeof value.accountId === 'string' ? value.accountId : '', profileId: typeof value.profileId === 'string' ? value.profileId : '', revision: value.revision};
 }
 
-/** 检查同一作品编辑版本；明确重试资源时可重新绑定刚登录的账号，旧在途结果始终检查账号。 */
+/** 建议属于同一作品；素材变化只提示，账号相关资源和在途请求仍核对账号来源。 */
 function sameBinding(left, right, includeAccount = true) {
-  return left.draftId === right.draftId && left.revision === right.revision && (!includeAccount || left.accountId === right.accountId && left.profileId === right.profileId);
+  return left.draftId === right.draftId && (!includeAccount || left.accountId === right.accountId && left.profileId === right.profileId);
 }
 
 /** 固定首行品牌话题和末尾拍照日期，并使用官网的 0 标记绑定名称话题。 */
@@ -116,12 +116,12 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
   if (typeof getCurrent !== 'function' || typeof fetchImpl !== 'function' || typeof client?.request !== 'function') throw TypeError('AI 编排需要当前作品、本机请求和平台查询接口。');
   let generation = 0, active = null, latest = null, disposed = false;
 
-  /** 每个异步边界都校验账号与编辑版本；取消只停止本次读取，不修改已有草稿。 */
+  /** 每个异步边界校验作品与账号；同稿素材变化仍完成显式输入的建议，结果不会自动应用。 */
   function check(job) {
     if (job.staleError) throw job.staleError;
     if (job.signal.aborted) throw new DOMException('AI 建议已取消。', 'AbortError');
     if (disposed || generation !== job.generation || !sameBinding(job.binding, currentBinding(getCurrent))) {
-      job.staleError = failure('AI_STALE_RESULT', '作品内容或账号已变化，本次 AI 结果未采用，请重新生成。');
+      job.staleError = failure('AI_STALE_RESULT', '作品或账号已切换，本次 AI 结果未采用，请重新生成。');
       job.controller.abort();
       throw job.staleError;
     }
@@ -320,13 +320,14 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
   }
 
   /** 完成后只返回可检查建议；应用必须由界面显式决定，并先调用 isCurrent。 */
-  function finish(input, analysis, matched, job, updatedScopes = ['music', 'activity']) {
+  function finish(input, analysis, matched, job, updatedScopes = ['music', 'activity'], analysisRevision = job.binding.revision) {
     check(job);
     const result = {...matched, id: uuid(), binding: {...job.binding}, title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), analysis: structuredClone(analysis), states: {copy: 'ready', ...matched.states}};
     // 只更新本次实际生成的账号相关项；换一项不能顺带使另一项的旧账号候选重新有效。
     const scopeBindings = {...latest?.scopeBindings};
     for (const scope of updatedScopes) if (['music', 'activity'].includes(scope)) scopeBindings[scope] = {...job.binding};
-    latest = {result, input, analysis, binding: {...job.binding}, scopeBindings, generation: job.generation};
+    // 单项重试沿用最初分析素材的版本，不能把未重做的其他建议标成已匹配新素材。
+    latest = {result, input, analysis, analysisRevision, binding: {...job.binding}, scopeBindings, generation: job.generation};
     return result;
   }
 
@@ -347,21 +348,21 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
     /** 只重试失败或账号来源已变化的资源；公共地点和热点建议不因换号重复生成。 */
     async retryResources(result, {signal, onProgress} = {}) {
       const record = latest, binding = currentBinding(getCurrent);
-      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '作品内容已变化，请重新生成 AI 建议。');
+      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '建议已更新或所属作品已切换，请使用当前作品的 AI 建议。');
       const scopes = ['activity', 'music', 'location', 'hotspot'].filter(scope => !this.isCurrent(result, scope) || result.states[scope] === 'error');
       if (!scopes.length) return result;
       const job = begin(binding, signal, onProgress);
       try {
         const retried = await recommend(record.input, record.analysis, job, scopes);
         const matched = {...result, ...retried, states: {...result.states, ...retried.states}, warnings: [...result.warnings.filter(item => !scopes.includes(item.scope) && item.scope !== 'resources'), ...retried.warnings]};
-        return finish(record.input, record.analysis, matched, job, scopes);
+        return finish(record.input, record.analysis, matched, job, scopes, record.analysisRevision);
       } finally { if (active === job) active = null; }
     },
     /** 用户明确重做一项时不触碰其他建议；单独提示词留空即恢复共同要求。 */
     async regenerate(result, scope, {signal, onProgress, prompt} = {}) {
       const record = latest, binding = currentBinding(getCurrent);
       if (!['copy', 'activity', 'music', 'location', 'hotspot'].includes(scope)) throw failure('AI_INVALID_REQUEST', '请选择要重新生成的建议。');
-      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '作品素材已变化，请重新生成 AI 建议。');
+      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '建议已更新或所属作品已切换，请使用当前作品的 AI 建议。');
       const input = {...record.input, resourcePrompts: {...record.input.resourcePrompts}};
       if (prompt !== undefined) {
         if (!['music', 'hotspot'].includes(scope) || typeof prompt !== 'string' || prompt.length > 7800) throw failure('AI_INVALID_REQUEST', '单项提示词格式或长度不正确，请调整后重试。');
@@ -378,19 +379,19 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
         if (scope === 'copy') update = {title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), states: {copy: 'ready'}, warnings: []};
         else update = await recommend(input, analysis, job, [scope], result);
         const merged = {...result, ...update, states: {...result.states, ...update.states}, warnings: [...result.warnings.filter(item => item.scope !== scope && item.scope !== 'resources'), ...update.warnings]};
-        return finish(input, analysis, merged, job, [scope]);
+        return finish(input, analysis, merged, job, [scope], record.analysisRevision);
       } finally { if (active === job) active = null; }
     },
     /** 编辑建议文案只更新当前结果，保留对象身份和其他资源；允许用户明确清空。 */
     editCopy(result, {title, description} = {}) {
-      if (!this.isCurrent(result)) throw failure('AI_STALE_RESULT', '作品素材已变化，请重新生成建议。');
+      if (!this.isCurrent(result)) throw failure('AI_STALE_RESULT', '建议已更新或所属作品已切换，请使用当前作品的 AI 建议。');
       if (typeof title !== 'string' || title.length > 20 || typeof description !== 'string' || description.length > 1000) throw failure('AI_INVALID_REQUEST', '标题最多 20 字，作品描述最多 1000 字。');
       result.title = title; result.description = description;
       latest.analysis = {...latest.analysis, title, description};
       result.analysis = structuredClone(latest.analysis);
       return result;
     },
-    /** 公共建议只绑定作品和素材版本；音乐来源与活动资格按各自生成时的账号检查。 */
+    /** 同稿建议不因素材变化失效；音乐来源与活动资格仍按各自生成时的账号检查。 */
     isCurrent(result, scope) {
       try {
         const binding = currentBinding(getCurrent);
@@ -398,9 +399,14 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
           (!['music', 'activity'].includes(scope) || !!latest.scopeBindings[scope] && sameBinding(latest.scopeBindings[scope], binding));
       } catch { return false; }
     },
+    /** 原分析的素材版本仅用作提醒，不限制编辑、单项重试或显式应用。 */
+    hasMediaChanges(result) {
+      try { return this.isCurrent(result) && latest.analysisRevision !== currentBinding(getCurrent).revision; }
+      catch { return false; }
+    },
     /** 关闭面板只终止在途读取，已完成建议可在同一作品中继续查看。 */
     cancelPending() { generation++; active?.controller.abort(); active = null; },
-    /** 切换作品或素材时撤销候选应用资格；迟到回执不能重新激活结果。 */
+    /** 切换作品或明确清除分析时撤销候选；迟到回执不能重新激活结果。 */
     cancel() { generation++; active?.controller.abort(); active = null; latest = null; },
     /** 释放该编辑器的所有在途读取和结果引用，不操作平台会话或本机作品。 */
     dispose() { this.cancel(); disposed = true; },

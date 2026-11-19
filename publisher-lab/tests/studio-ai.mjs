@@ -237,8 +237,8 @@ for (const mode of ['unknown', 'ambiguous', 'unavailable']) {
   assert.equal(h.state.queries.find(item => item.operation === 'music.search').params.query, '', 'lack of search words uses real recommendations for model matching');
 }
 
-// 编辑、手动选择和切换账号让结果失效；旧异步响应不得恢复建议或覆盖现有字段。
-for (const field of ['revision', 'draftId', 'accountId', 'profileId']) {
+// 换稿或换号仍使在途结果失效；旧异步响应不得恢复建议或覆盖其他作品。
+for (const field of ['draftId', 'accountId', 'profileId']) {
   const h = harness();
   let release, started;
   const waiting = new Promise(resolve => { started = resolve; });
@@ -248,13 +248,47 @@ for (const field of ['revision', 'draftId', 'accountId', 'profileId']) {
   await waiting; h.binding[field] += '-changed'; release(); await outcome;
   assert.equal(h.state.queries.length, 0);
 }
+// 同稿素材变化只提示，不撤销完成建议；编辑、逐项更新、应用资格均继续保留。
 {
   const h = harness(), value = await h.ai.generate(h.input);
-  h.binding.revision = 'user-selected-different-music';
-  assert.equal(h.ai.isCurrent(value), false);
+  assert.equal(h.ai.hasMediaChanges(value), false);
+  h.binding.revision = 'user-reordered-or-removed-media';
+  assert.equal(h.ai.hasMediaChanges(value), true);
+  for (const scope of [undefined, 'copy', 'activity', 'music', 'location', 'hotspot']) assert.equal(h.ai.isCurrent(value, scope), true);
   const before = h.state.aiRequests.length;
-  await assert.rejects(h.ai.retryResources(value), error => error.code === 'AI_STALE_RESULT');
+  assert.equal(await h.ai.retryResources(value), value, '素材提醒不能强制重新匹配已完成资源');
   assert.equal(h.state.aiRequests.length, before);
+  h.ai.editCopy(value, {title: '保留手工修改', description: '素材调整后仍能编辑建议。'});
+  assert.equal(value.title, '保留手工修改'); assert.equal(h.ai.hasMediaChanges(value), true);
+  let next = value;
+  for (const scope of ['activity', 'music', 'location', 'hotspot', 'copy']) {
+    const previous = next;
+    next = await h.ai.regenerate(previous, scope);
+    assert.equal(h.ai.isCurrent(next), true, `${scope} 更新后仍可应用`);
+    assert.equal(h.ai.hasMediaChanges(next), true, '单项更新不能把整份建议伪装为已按新素材完整生成');
+    assert.equal(h.ai.isCurrent(previous), false, '被本次操作替换的旧结果不能重新应用');
+    if (scope !== 'copy') assert.equal(next.description, '素材调整后仍能编辑建议。');
+  }
+  const refreshed = await h.ai.generate({...h.input, assetIds: ['asset-new']});
+  assert.equal(h.ai.hasMediaChanges(refreshed), false, '完整重新生成后更新素材基准');
+  assert.equal(h.ai.isCurrent(next), false);
+  assert.deepEqual(h.state.aiRequests.filter(item => item.phase === 'analyze').at(-1).assetIds, ['asset-new']);
+}
+
+// 生成中调整素材不取消任务；建议只被返回，仍由用户决定是否应用。
+for (const phase of ['analyze', 'music.search']) {
+  const h = harness(); let release, started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  const hold = () => { started(); return new Promise(resolve => { release = resolve; }); };
+  if (phase === 'analyze') h.state.onAI = request => request.phase === phase ? hold() : undefined;
+  else h.state.onQuery = operation => operation === phase ? hold() : undefined;
+  const pending = h.ai.generate(h.input);
+  await waiting; h.binding.revision += '-media-changed';
+  h.state.onAI = null; h.state.onQuery = null; release();
+  const value = await pending;
+  assert.equal(value.music.id, '201'); assert.equal(h.ai.isCurrent(value), true);
+  assert.equal(h.ai.hasMediaChanges(value), true);
+  assert.ok(h.state.queries.every(item => !item.signal.aborted), '同稿素材变化不终止后续资源处理');
 }
 {
   const h = harness(); let release, started;
@@ -416,9 +450,12 @@ for (const mode of ['query', 'unknown-choice', 'invalid-topic']) {
 {
   const h = harness(); h.state.failQuery = 'hotspots.search'; h.state.hotspots = [{name: '一起徒步'}];
   const partial = await h.ai.generate(h.input); h.state.failQuery = null;
+  h.binding.revision = 'media-adjusted-after-partial-result';
+  assert.equal(h.ai.hasMediaChanges(partial), true);
   const queries = h.state.queries.length, asks = h.state.aiRequests.length;
   const retried = await h.ai.retryResources(partial);
   assert.equal(retried.hotspot.name, '一起徒步'); assert.equal(retried.music, partial.music);
+  assert.equal(h.ai.isCurrent(retried), true); assert.equal(h.ai.hasMediaChanges(retried), true);
   assert.deepEqual(h.state.queries.slice(queries).map(item => item.operation), ['hotspots.search']);
   assert.deepEqual(h.state.aiRequests.slice(asks).map(item => item.phase), ['select']);
 }
@@ -436,11 +473,14 @@ for (const mode of ['query', 'unknown-choice', 'invalid-topic']) {
   h.ai.cancel(); assert.equal(h.ai.isCurrent(first), false);
 }
 
-// 素材或作品变化后的单项请求在读取前拒绝，不能复用旧作品建议。
-for (const field of ['revision', 'draftId']) {
+// 切换作品后的单项请求在读取前拒绝，不能复用另一作品的建议。
+for (const field of ['draftId']) {
   const h = harness(), first = await h.ai.generate(h.input), queries = h.state.queries.length;
   h.binding[field] += '-changed';
   await assert.rejects(h.ai.regenerate(first, 'hotspot'), error => error.code === 'AI_STALE_RESULT');
+  await assert.rejects(h.ai.retryResources(first), error => error.code === 'AI_STALE_RESULT');
+  assert.throws(() => h.ai.editCopy(first, {title: '错稿', description: ''}), error => error.code === 'AI_STALE_RESULT');
+  assert.equal(h.ai.isCurrent(first), false);
   assert.equal(h.state.queries.length, queries);
 }
 // 编辑建议保留结果身份；其他单项重做不得恢复旧文案，明确清空同样保留。
@@ -490,4 +530,4 @@ for (const field of ['accountId', 'profileId']) {
     assert.ok(next.warnings.some(item => item.scope === key && item.code === 'AI_MATCH_FAILED'));
   }
 }
-console.log('studio AI: explicit images, local-only contract, actual candidate provenance, city resolution, bounded matching, dates, offline/partial retry, cancellation and edit/account race isolation passed');
+console.log('studio AI: explicit images, candidate provenance, bounded matching, advisory-only media changes, retained edits/retries, cancellation and draft/account race isolation passed');

@@ -361,9 +361,31 @@ try {
   assert.equal(await page.locator('#ai-apply-copy').isChecked(), true);
   assert.equal(await page.locator('#ai-apply-music').isDisabled(), true);
   const analysesBeforeRetry = model.calls.filter(item => item.phase === 'analyze').length;
+  // 素材变化只提示，文案编辑、失败项重试和显式应用均保留，不暗中重新分析。
+  const callsBeforeMediaChange = model.calls.length;
+  await page.locator('#studio-gallery .studio-gallery-image').nth(1).focus(); await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForFunction(() => __aiUI.state.drafts.find(item => item.id === 'ai-draft').assets[0].id === 'fixture-2');
+  assert.match(await page.locator('#ai-status').textContent(), /作品素材已变化.*仍可编辑、重试和应用/);
+  assert.equal(model.calls.length, callsBeforeMediaChange, 'media changes do not implicitly regenerate');
+  assert.equal(await page.locator('#ai-retry-resources').isDisabled(), false);
+  assert.equal(await page.locator('#ai-edit-copy').isDisabled(), false);
+  for (const key of scopes) assert.equal(await page.locator('#ai-regenerate-' + key).isDisabled(), false);
+  await page.locator('#ai-edit-copy').click();
+  await page.locator('#ai-copy-title').fill('素材变化后仍可编辑');
+  await page.locator('#ai-copy-save').click();
+  assert.equal(await page.locator('#ai-result-title').textContent(), '素材变化后仍可编辑');
   model.fail = ''; await page.locator('#ai-retry-resources').click();
   await page.waitForFunction(() => !document.querySelector('#ai-generate').disabled && !document.querySelector('#ai-apply-location').disabled);
   assert.equal(model.calls.filter(item => item.phase === 'analyze').length, analysesBeforeRetry);
+  assert.match(await page.locator('#ai-status').textContent(), /作品素材已变化/, 'retry keeps the original analysis reminder');
+  await regenerate('music');
+  assert.match(await page.locator('#ai-status').textContent(), /作品素材已变化/, 'single-item regeneration keeps the advisory');
+  await selectOnly(['copy']); await applySelected();
+  assert.equal((await draft()).title, '素材变化后仍可编辑');
+  assert.equal((await draft()).assets[0].id, 'fixture-2', 'applying suggestions preserves the new image order');
+  await page.screenshot({path: output + 'studio-ai-media-advisory.png'});
+  await page.locator('#studio-gallery .studio-gallery-image').nth(0).focus(); await page.keyboard.press('Alt+ArrowRight');
+  await page.waitForFunction(() => __aiUI.state.drafts.find(item => item.id === 'ai-draft').assets[0].id === 'fixture-1');
 
   // 完成的公共建议换号后直接可用；旧账号音乐/活动只需分别更新，公共操作不触发隐式核验。
   const publicSuggestions = await page.evaluate(() => Object.fromEntries(['title', 'description', 'location', 'hotspot'].map(key => [key, document.querySelector('#ai-result-' + key).textContent])));
@@ -386,7 +408,7 @@ try {
   await regenerate('activity');
   assert.equal(await page.locator('#ai-apply-activity').isDisabled(), false);
 
-  // 迟到的模型响应不能跨账号或素材版本恢复应用资格，背景与已保存草稿始终保留。
+  // 同稿素材变化允许在途建议完成但不自动应用；换号的迟到响应不能替换已有建议。
   async function heldGeneration() {
     model.hold = 'analyze';
     const held = new Promise(resolve => { model.onHeld = resolve; });
@@ -404,8 +426,10 @@ try {
   await page.locator('#studio-gallery .studio-gallery-image').nth(1).focus(); await page.keyboard.press('Alt+ArrowLeft');
   await page.waitForFunction(() => __aiUI.state.drafts.find(item => item.id === 'ai-draft').assets[0].id === 'fixture-2');
   await releaseGeneration();
-  assert.equal(await page.locator('#ai-apply').isDisabled(), true);
-  assert.equal((await draft()).description, beforeLate);
+  assert.equal(await page.locator('#ai-apply').isDisabled(), false, 'in-flight media changes do not lock completed suggestions');
+  assert.match(await page.locator('#ai-status').textContent(), /作品素材已变化/);
+  for (const key of scopes) assert.equal(await page.locator('#ai-regenerate-' + key).isDisabled(), false);
+  assert.equal((await draft()).description, beforeLate, 'completed suggestions are not applied automatically');
   assert.equal(await page.locator('#ai-context').inputValue(), '杭州西湖傍晚散步，自然克制的摄影记录');
   await generate();
   assert.equal(JSON.parse(model.calls.filter(item => item.phase === 'analyze').at(-1).context).dateTag, '#20210706', 'date fallback follows the new first image directory');

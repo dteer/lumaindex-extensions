@@ -145,7 +145,7 @@ const activities = mountActivities({container: $('studio-activities'), current, 
   onChanged: () => { $('description').value = current().description; markChanged(); renderResources(); },
 });
 
-// aiAssistant 将模型分析和平台候选分开；公共建议检查作品版本，音乐/活动另检查账号来源。
+// aiAssistant 将模型分析和平台候选分开；素材版本仅作建议提醒，音乐/活动另检查账号来源。
 const aiAssistant = createStudioAI({client, getCurrent: () => ({draftId: current().id,
   accountId: session.account?.id || '', profileId: session.activeProfileId || '', connected: session.connected, revision: JSON.stringify([current().kind, current().assets.map(asset => [asset.id, assetDetails.get(asset.id)?.version, assetDetails.get(asset.id)?.error])])})});
 const aiPanel = mountStudioAIPanel({assistant: aiAssistant, current, preferences: () => store.data,
@@ -1404,7 +1404,7 @@ async function previewFiles(files) {
 // applyAIResult 一次应用显式勾选项；候选已生成时不重复查询账号或匹配平台资源。
 async function applyAIResult(value, selection) {
   const applicable = () => aiAssistant.isCurrent(value) && Object.entries(selection).every(([key, selected]) => !selected || aiAssistant.isCurrent(value, key));
-  if (busy || !applicable()) throw Error('所选建议的素材或账号来源已变化，请更新对应建议。');
+  if (busy || !applicable()) throw Error('所选建议的作品或账号来源已变化，请更新对应建议。');
   const draft = current(), signature = contentSignature(draft);
   const next = buildAIApplication(draft, value, selection);
   const selectedMusic = selection.music && value.music ? await rememberSelectedMusic(value.music) : null;

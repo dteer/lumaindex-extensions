@@ -22,6 +22,17 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
   const visible = () => !inputPanel.hidden;
   const prompts = () => current().aiResourcePrompts || {};
 
+  // 素材变化提醒基于原分析输入，不改变下方建议的编辑、重试和应用资格。
+  function advisory() {
+    if (!result || !assistant.isCurrent(result)) return '';
+    const notices = [];
+    if (assistant.hasMediaChanges(result)) notices.push('作品素材已变化，建议重新生成；下方建议仍可编辑、重试和应用。');
+    if (['music', 'activity'].some(key => !assistant.isCurrent(result, key))) notices.push('账号已切换，音乐和官方活动可分别重新推荐，其他建议可继续使用。');
+    return notices.join(' ');
+  }
+  // 单项生成或应用完成后继续保留提醒，不把完成状态变成操作门槛。
+  function showStatus(message) { $('ai-status').textContent = [message, advisory()].filter(Boolean).join(' '); }
+
   // 图片分析仍只发送用户勾选的图库缩略图，原图与未勾选素材不参与。
   function images() {
     return current().kind === 'image' ? current().assets.filter(asset => asset.kind === 'image' && !asset.localOnly && !assetDetail(asset.id)?.error) : [];
@@ -165,7 +176,7 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
       else if (scope === 'resources') { for (const key of scopes) if (previous?.states?.[key] === 'error') chooseDefaults(key); }
       else if (previous?.states?.[scope] === 'error') chooseDefaults(scope);
       renderResult();
-      $('ai-status').textContent = value.warnings?.length ? '建议已生成，未完成的项目可单独重试。' : '建议已生成，请选择需要应用的内容。';
+      showStatus(value.warnings?.length ? '建议已生成，未完成的项目可单独重试。' : '建议已生成，请选择需要应用的内容。');
     } catch (error) {
       if (job !== task) return;
       $('ai-status').textContent = error.name === 'AbortError' ? '已取消，已有建议和填写内容已保留。' : error.message || 'AI 生成失败，请重试。';
@@ -191,9 +202,9 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
       $('ai-prompt').value = currentPrompt(preferences().aiPrompt);
     }
     if (result && !assistant.isCurrent(result)) {
-      $('ai-status').textContent = '作品素材已变化，请重新生成建议。';
-    } else if (result && ['music', 'activity'].some(key => !assistant.isCurrent(result, key))) {
-      $('ai-status').textContent = '账号已切换，音乐和官方活动可分别重新推荐，其他建议可继续使用。';
+      $('ai-status').textContent = '建议已更新或所属作品已切换，请使用当前作品的 AI 建议。';
+    } else if (!job && advisory()) {
+      showStatus('');
     }
     if (visible()) { renderImages(); renderResult(); }
   }
@@ -260,7 +271,7 @@ export function mountStudioAIPanel({assistant, current, preferences, savePrefere
     try {
       if (await apply(value, selection)) {
         for (const key of scopes) if (selection[key]) choices[key] = false;
-        $('ai-status').textContent = '所选建议已填入作品。'; renderResult();
+        showStatus('所选建议已填入作品。'); renderResult();
       }
     } catch (error) { $('ai-status').textContent = error.message || '应用失败，建议已保留。'; }
     finally { applying = false; controls(); }
