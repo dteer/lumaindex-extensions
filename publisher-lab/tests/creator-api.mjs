@@ -65,6 +65,23 @@ async function nativeRequest(operation, params, replies) {
   return {result, calls};
 }
 
+// 最近联系人与搜索均直接返回头像、粉丝数和抖音号，不为展示另查账号。
+for (const query of ['', '合成好友']) {
+  const {result, calls} = await nativeRequest('users.search', {query}, [{status_code: 0, user_list: [
+    {uid: '601', nickname: '合成好友', unique_id: 'photo_test', short_id: '12345', follower_count: 139, avatar_thumb: {url_list: ['https://media.example.test/friend.jpg']}},
+    {uid: '602', nickname: '新好友', unique_id: '', short_id: '67890', follower_count: 0},
+    {uid: '603', nickname: '未知粉丝'},
+  ], has_more: !!query, cursor: 0}]);
+  assert.equal(result.ok, true); assert.equal(calls.length, 1);
+  assert.equal(new URL(calls[0].url).pathname, query ? '/web/api/v2/discover/search/' : '/web/api/v2/user/recent/contact/');
+  assert.equal(result.data.items[0].id, '601'); assert.equal(result.data.items[0].name, '合成好友');
+  assert.equal(result.data.items[0].handle, 'photo_test'); assert.equal(result.data.items[0].description, 'photo_test');
+  assert.equal(result.data.items[0].followerCount, 139); assert.equal(result.data.items[0].thumbnailURL, 'https://media.example.test/friend.jpg');
+  assert.equal(result.data.items[1].handle, '67890'); assert.equal(result.data.items[1].followerCount, 0);
+  assert.equal(result.data.items[2].handle, ''); assert.equal(result.data.items[2].followerCount, null);
+  assert.equal(result.data.nextCursor, query ? '10' : null);
+}
+
 // 宿主稳定错误码和明确 HTTP 登录拒绝原样反馈；未知平台业务码不能猜成账号失效。
 for (const code of ['SESSION_EXPIRED', 'ACCOUNT_CHANGED', 'SESSION_CHANGED', 'NETWORK_CANCELLED']) {
   const {result} = await nativeRequest('account', {}, [Object.assign(Error('合成宿主请求失败'), {code})]);

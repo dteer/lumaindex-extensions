@@ -80,7 +80,7 @@ try {
   wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16);
   wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28);
   wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(16000, 40);
-  await page.route('https://media.example.test/**', route => route.fulfill({status: 200, contentType: route.request().url().endsWith('.wav') ? 'audio/wav' : 'image/svg+xml', body: route.request().url().endsWith('.wav') ? wav : picture}));
+  await page.route('https://media.example.test/**', route => route.fulfill({status: route.request().url().endsWith('broken-avatar.svg') ? 404 : 200, contentType: route.request().url().endsWith('.wav') ? 'audio/wav' : 'image/svg+xml', body: route.request().url().endsWith('broken-avatar.svg') ? '' : route.request().url().endsWith('.wav') ? wav : picture}));
   await page.addInitScript(({origin}) => {
     const profile = {id: 'profile-resources', accountId: '123', name: '摄影日志', browserSessionAvailable: true, hasCookies: true, expiresAt: new Date(Date.now() + 8 * 3600000).toISOString()};
     const runtime = {};
@@ -120,6 +120,16 @@ try {
       ]}};
       else if (url.pathname === '/web/api/media/hashtag/rec/') data = {status_code: 0, challenge_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2203', cha_name: '海边散步', view_count: 32000}]};
       else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2202', cha_name: '摄影技巧', view_count: 21000}]};
+      else if (url.pathname === '/web/api/v2/user/recent/contact/') data = {status_code: 0, user_list: [
+        {uid:'5101',nickname:'摄影同学',follower_count:139,unique_id:'photo_test',short_id:'1001',avatar_thumb:{url_list:['https://media.example.test/contact.svg']}},
+        {uid:'5102',nickname:'零粉丝新朋友',follower_count:0,short_id:'1002'},
+        {uid:'5103',nickname:'山野拾光',follower_count:12000,unique_id:'mountain_light',avatar_thumb:{url_list:['https://media.example.test/broken-avatar.svg']}},
+        {uid:'5104',nickname:'仅有昵称的朋友',avatar_thumb:{url_list:['javascript:alert(1)']}},
+        ...Array.from({length:6},(_,i)=>({uid:String(5105+i),nickname:i===0?'拥有一个非常长昵称的朋友用于检查窄屏文字是否保持在当前行':'最近联系人'+i,follower_count:80+i,unique_id:'recent_contact_'+i})),
+      ],has_more:0};
+      else if (url.pathname === '/web/api/v2/discover/search/') data = {status_code: 0, user_list: url.searchParams.get('cursor') === '0'
+        ? Array.from({length:10},(_,i)=>({uid:String(6101+i),nickname:'小伙伴'+i,follower_count:100+i,unique_id:'searched_friend_'+i,avatar_thumb:{url_list:['https://media.example.test/contact.svg']}}))
+        : [{uid:'6110',nickname:'小伙伴9',follower_count:109,unique_id:'searched_friend_9'},{uid:'6111',nickname:'小伙伴下一页',follower_count:7,short_id:'7011'}], has_more:url.searchParams.get('cursor') === '0' ? 1 : 0, cursor:Number(url.searchParams.get('cursor'))};
       else if (url.pathname === '/web/api/media/music/category') data = {status_code: 0, categories: [{category_id: '1', category_name: '推荐', type: 'recommend'}]};
       else if (url.pathname === '/web/api/media/music/list') data = {status_code: 0, songs: [{music_id: '3301', music_name: '海边原声', music_author: '合成作者', duration: 45, cover_url: 'https://media.example.test/cover.svg', play_url: 'https://media.example.test/default.wav', user_count: 1234}], has_more: url.searchParams.get('cursor') === '0' ? 1 : 0, cursor: url.searchParams.get('cursor') === '0' ? '20' : '40'};
       else if (url.pathname === '/web/api/media/aweme/search/post/auth') data = {status_code: 0, signature: 'synthetic-ui-grant'};
@@ -214,6 +224,62 @@ try {
   await page.locator('#topic-recommendations button').filter({hasText: '#海边散步'}).click();
   assert.equal((await description.inputValue()).length, 1000, 'full description stays intact when adding a recommendation');
   assert.match(await description.evaluate(input => input.validationMessage), /字数上限/);
+  await description.fill(topicDescription);
+  await page.locator('#topic-recommendations button').filter({hasText: '#摄影日常'}).click();
+  await page.keyboard.press('Escape');
+
+  // 好友候选经过真实 client/engine 映射：最近联系人、头像与双行信息，不为缺失字段补造数值。
+  const accountChecksBeforeContacts = await requestCount('/web/api/media/user/info/');
+  await description.fill('前文 ');
+  await page.locator('#search-mentions').click();
+  const contacts = page.locator('#association-results'), contactRows = contacts.getByRole('option');
+  await page.waitForFunction(() => document.querySelectorAll('#association-results .mention-option').length === 10);
+  assert.equal(await contacts.locator('.mention-heading').textContent(), '最近联系人');
+  assert.equal(await contacts.locator('.mention-heading').isVisible(), true);
+  assert.equal(await contactRows.nth(0).locator('.mention-name').textContent(), '摄影同学');
+  assert.equal(await contactRows.nth(0).locator('.mention-followers').textContent(), '粉丝数 139');
+  assert.equal(await contactRows.nth(0).locator('.mention-handle').textContent(), '抖音号 photo_test');
+  assert.equal(await contactRows.nth(0).locator('img').getAttribute('src'), 'https://media.example.test/contact.svg');
+  assert.equal(await contactRows.nth(1).locator('.mention-followers').textContent(), '粉丝数 0');
+  assert.equal(await contactRows.nth(1).locator('.mention-handle').textContent(), '抖音号 1002');
+  assert.equal(await contactRows.nth(1).locator('img').count(), 0);
+  assert.equal(await contactRows.nth(2).locator('.mention-followers').textContent(), '粉丝数 1.2万');
+  await contactRows.nth(2).locator('img').waitFor({state:'detached'});
+  assert.equal(await contactRows.nth(3).locator('.mention-details, img').count(), 0, 'missing fields and unsafe avatars are not fabricated');
+  assert.equal(await contacts.locator('.resource-options').evaluate(element => element.clientHeight <= 280 && element.scrollHeight > element.clientHeight), true);
+  await page.screenshot({path: output + 'studio-resources-contacts.png'});
+  await description.press('ArrowDown');
+  assert.equal(await contactRows.nth(0).evaluate(element => element === document.activeElement), true);
+  await page.keyboard.press('Enter');
+  assert.equal(await description.inputValue(), '前文 @摄影同学');
+  await page.waitForFunction(() => window.__resourcesUI.state.drafts?.some(draft => draft.mentions?.[0]?.id === '5101'));
+  assert.deepEqual(await page.evaluate(() => window.__resourcesUI.state.drafts.find(draft => draft.id === window.__resourcesUI.state.activeDraftId).mentions), [{id:'5101',name:'摄影同学'}]);
+
+  // 搜索保持同一候选选择逻辑，内部滚动继续分页，Enter/点击仍绑定字符串 uid。
+  await description.fill('前文 @小 后文');
+  await description.evaluate(input => { input.setSelectionRange(5, 5); input.dispatchEvent(new Event('input', {bubbles:true})); });
+  await contactRows.filter({hasText:'小伙伴0'}).waitFor();
+  assert.equal(await contacts.locator('.mention-heading').isHidden(), true);
+  assert.equal(await contactRows.count(), 10);
+  await contacts.locator('.resource-options').evaluate(element => { element.scrollTop=element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
+  await contactRows.filter({hasText:'小伙伴下一页'}).waitFor();
+  assert.equal(await contactRows.count(), 11, 'page overlap is deduplicated by uid');
+  assert.equal(await requestCount('/web/api/v2/discover/search/'), 2);
+  await contactRows.filter({hasText:'小伙伴下一页'}).click();
+  assert.equal(await description.inputValue(), '前文 @小伙伴下一页 后文');
+  await page.waitForFunction(() => window.__resourcesUI.state.drafts?.some(draft => draft.mentions?.[0]?.id === '6111'));
+  assert.deepEqual(await page.evaluate(() => window.__resourcesUI.state.drafts.find(draft => draft.id === window.__resourcesUI.state.activeDraftId).mentions), [{id:'6111',name:'小伙伴下一页'}]);
+  await description.fill('窄屏 @');
+  await contacts.locator('.mention-heading').waitFor();
+  await page.setViewportSize({width:560,height:850});
+  await contactRows.filter({hasText:'摄影同学'}).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.equal(await contacts.evaluate(element => element.getBoundingClientRect().right <= innerWidth && element.scrollWidth <= element.clientWidth), true);
+  await page.screenshot({path: output + 'studio-resources-contacts-narrow.png'});
+  await page.keyboard.press('Escape');
+  assert.equal(await contacts.isHidden(), true);
+  assert.equal(await requestCount('/web/api/media/user/info/'), accountChecksBeforeContacts, 'contact display and selection add no account checks');
+  await page.setViewportSize({width:1290,height:1000});
   await description.fill(topicDescription);
   await page.locator('#topic-recommendations button').filter({hasText: '#摄影日常'}).click();
   await page.keyboard.press('Escape');

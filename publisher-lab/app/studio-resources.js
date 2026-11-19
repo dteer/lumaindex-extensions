@@ -130,7 +130,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       button.setAttribute('role', 'option'); button.disabled = !!item.disabled;
       const selected = state.kind === 'declaration' ? current().settings.declarations.includes(item.id) : ['topics', 'mentions'].includes(state.kind) ? current()[state.kind].some(value => sameResource(state.kind, value, item)) : current()[state.kind]?.id === item.id;
       button.setAttribute('aria-selected', String(selected));
-      const label = node('span', 'resource-option-label', (state.kind === 'topics' ? '#  ' : state.kind === 'mentions' ? '@  ' : '') + (item.name || item.label));
+      const label = node('span', 'resource-option-label', (state.kind === 'topics' ? '#  ' : '') + (item.name || item.label));
       if (item.description && item.description !== item.address && !['topics', 'mentions', 'collection'].includes(state.kind)) label.append(node('small', '', item.description));
       if (item.address) label.append(node('small', '', item.address));
       if (state.kind === 'collection') {
@@ -140,6 +140,22 @@ export function mountResourceControls({current, supports, safeURL, request, iden
         if (url) { const image = node('img'); image.src = url; image.alt = ''; image.loading = 'lazy'; cover.append(image); }
         const count = Number.isSafeInteger(item.itemCount) && item.itemCount >= 0 ? `共${item.itemCount}个作品` : '';
         button.append(node('span', 'collection-check', selected ? '✓' : ''), cover, label, node('span', 'collection-count', count));
+      } else if (state.kind === 'mentions') {
+        button.classList.add('mention-option');
+        const avatar = node('span', 'mention-avatar'); avatar.setAttribute('aria-hidden', 'true');
+        const url = safeURL(item.thumbnailURL);
+        if (url) {
+          const image = node('img'); image.src = url; image.alt = ''; image.loading = 'lazy';
+          image.onerror = () => image.remove(); avatar.append(image);
+        }
+        label.replaceChildren(node('span', 'mention-name', item.name));
+        const details = node('span', 'mention-details');
+        if (typeof item.followerCount === 'number' && Number.isFinite(item.followerCount) && item.followerCount >= 0) details.append(node('span', 'mention-followers', '粉丝数 ' + (item.followerCount === 0 ? '0' : heat(item.followerCount))));
+        // 旧候选的 description 就是平台抖音号，缺少新字段时继续兼容。
+        const handle = (typeof item.handle === 'string' ? item.handle.trim() : '') || (typeof item.description === 'string' ? item.description.trim() : '');
+        if (handle) details.append(node('span', 'mention-handle', '抖音号 ' + handle));
+        if (details.childNodes.length) label.append(details);
+        button.append(avatar, label);
       } else button.append(label);
       if (state.kind === 'topics') button.append(node('span', 'topic-heat', heat(item.viewCount)));
       else if (selected && state.kind !== 'collection') button.append(node('span', 'resource-selected', '✓'));
@@ -178,6 +194,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     state.failed = false; state.retry.hidden = true; state.more.hidden = true; state.message.textContent = '正在读取…';
     const query = state.input?.value.trim() || '';
     if (!more) { state.query = query; state.cursor = null; state.hasMore = false; state.items = []; renderItems(state); }
+    if (state.heading) state.heading.hidden = !!state.query;
     try {
       if (state.kind === 'topics' && !supports(state.operation)) {
         state.message.textContent = state.query ? '当前无法读取在线话题，可直接添加输入的话题。' : '输入话题名称即可添加。';
@@ -224,6 +241,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     clearTimeout(timer); state.controller?.abort(); state.generation++; state.loading = false;
     // 新关键词立即废弃旧分页，避免防抖期间旧续页抢先占用 loading。
     state.hasMore = false; state.cursor = null; state.more.hidden = true; state.retry.hidden = true;
+    if (state.heading) state.heading.hidden = !!state.input.value.trim();
     if (state.kind === 'topics') { state.query = state.input.value.trim(); state.items = []; renderItems(state); }
     timer = setTimeout(() => { void load(state); }, 250);
   }
@@ -235,7 +253,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     close();
     const associations = kind === 'topics' || kind === 'mentions';
     const container = associations ? $('association-results') : $(kind + '-popover');
-    container.replaceChildren(); container.hidden = false;
+    container.replaceChildren(); container.hidden = false; container.classList.toggle('mention-results', kind === 'mentions');
     const state = {kind, operation: operations[kind], container, items: [], generation: 0, loading: false, cursor: null, hasMore: false};
     active = state;
     if (!associations && kind !== 'declaration') {
@@ -243,7 +261,9 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       state.input.placeholder = kind === 'collection' ? '搜索合集' : '输入地点名称'; state.input.setAttribute('aria-label', state.input.placeholder);
       state.input.value = query; state.input.oninput = () => searchChanged(state); container.append(state.input);
     } else state.input = {value: query};
+    if (kind === 'mentions') { state.heading = node('div', 'mention-heading', '最近联系人'); state.heading.hidden = !!query; container.append(state.heading); }
     state.list = node('div', 'resource-options'); state.list.setAttribute('role', 'listbox');
+    if (kind === 'mentions') state.list.setAttribute('aria-label', '好友候选');
     state.message = node('p', 'resource-message'); state.message.setAttribute('role', 'status');
     state.retry = node('button', 'resource-retry', '重试'); state.retry.hidden = true;
     state.more = node('button', 'resource-more', '加载更多'); state.more.hidden = true; state.more.onclick = () => { void load(state, true); };

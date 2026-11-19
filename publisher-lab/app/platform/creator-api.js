@@ -167,7 +167,13 @@ return async function creatorRequest(operation, params = {}) {
       });
       return {ok: true, data: {items, required: [1, 2].includes(options.block_type), nextCursor: null}};
     }
-    if (operation === 'users.search') return {ok: true, data: {items: (data.user_list || []).filter(x => identifier(x.uid) && text(x.nickname)).map(x => ({id: x.uid, name: x.nickname, description: text(x.unique_id) || text(x.short_id), thumbnailURL: mediaURL(x.avatar_thumb?.url_list?.[0])})), nextCursor: data.has_more && Number.isSafeInteger(Number(data.cursor)) ? String(Number(data.cursor) + 10) : null}};
+    if (operation === 'users.search') return {ok: true, data: {items: (data.user_list || []).filter(x => identifier(x.uid) && text(x.nickname)).map(x => {
+      // 最近联系人和搜索共用平台展示字段；缺失粉丝数不补零，草稿仍只绑定 uid 与昵称。
+      const handle = text(x.unique_id) || text(x.short_id);
+      return {id: x.uid, name: x.nickname, description: handle, handle,
+        followerCount: Number.isSafeInteger(x.follower_count) && x.follower_count >= 0 ? x.follower_count : null,
+        thumbnailURL: mediaURL(x.avatar_thumb?.url_list?.[0])};
+    }), nextCursor: data.has_more && Number.isSafeInteger(Number(data.cursor)) ? String(Number(data.cursor) + 10) : null}};
     // 官方详情按 id 返回基础身份，不返回音源或时长；这些字段不能猜测或由名称补齐。
     if (operation === 'music.resolve') {
       if (!identifier(data.music_id) || data.music_id !== params.id || !text(data.music_name).trim() || data.music_name.length > 200) throw Error('平台返回的音乐身份无法确认，已保留原配乐。');

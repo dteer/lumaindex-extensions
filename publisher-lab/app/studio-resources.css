@@ -27,6 +27,17 @@
 .association-results { position: absolute; top: 100%; left: 94px; right: 0; z-index: 42; margin-top: 6px; padding: 8px 0; border-radius: 10px; border: 1px solid #f1f1f3; background: white; box-shadow: 0 5px 18px #16182312; }
 .association-results .resource-options { max-height: 330px; }
 .association-results .resource-option { min-height: 44px; padding-left: 24px; }
+.mention-heading { padding: 3px 16px 7px; color: #999aa2; font-size: 12px; line-height: 20px; }
+.association-results.mention-results .resource-options { max-height: 280px; overflow-x: hidden; }
+.mention-results .mention-option { min-height: 58px; gap: 10px; padding: 9px 16px; }
+.mention-avatar { position: relative; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: #eeeef1; }
+.mention-avatar::before { content: ''; position: absolute; top: 7px; left: 13px; width: 10px; height: 10px; border-radius: 50%; background: #c3c4ca; }
+.mention-avatar::after { content: ''; position: absolute; top: 20px; left: 8px; width: 20px; height: 16px; border-radius: 50% 50% 0 0; background: #c3c4ca; }
+.mention-avatar img { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: cover; }
+.mention-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 21px; }
+.mention-details { display: flex; align-items: center; gap: 12px; min-width: 0; margin-top: 2px; color: #999aa2; font-size: 12px; line-height: 17px; }
+.mention-followers { flex-shrink: 0; white-space: nowrap; }
+.mention-handle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-heat { color: #afb0b7; font-size: 13px; white-space: nowrap; }
 .topic-recommendations { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; border-top: 1px solid #e5e5e8; background: #f8f8fa; padding: 12px; margin: 2px -12px -8px; border-radius: 0 0 6px 6px; color: #8b8c95; font-size: 12px; }
 .topic-recommendations button { background: white; border: 1px solid #e8e8ed; color: #80818c; padding: 2px 8px; min-height: 24px; font-size: 12px; }
