@@ -397,11 +397,14 @@ console.log('native favorite music: exact long cursor through full engine, termi
   const value = draft({description: '作品 #摄影日常', topics: [{id: '801', name: '摄影日常'}], activities: [activity]});
   await h.run('activities.detail', {id: '701'});
   const items = await h.run('activities.list'); assert.equal(items.items[0].topicName, activity.topic.name); assert.equal(items.items[0].topic, undefined);
-  await h.run('activities.list');
-  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 1, 'read-only lists can reuse the short same-account cache');
+  h.state.activities = [{activity_id: '701', activity_name: activity.name, activity_status: 1, challenge: [activity.topic.name], challenge_ids: [activity.topic.id], hot_score: 520}];
+  const refreshed = await h.run('activities.list');
+  assert.equal(refreshed.items[0].heat, 520, 'an explicit activity reread returns changed platform data even within the query cache TTL');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 2, 'activity refresh bypasses the short query cache');
+  assert.equal(h.state.paths.includes('/web/api/media/user/info/'), false, 'activity browsing and refresh do not request extra account verification');
   const prepared = await h.run('publication.prepare', {draft: value});
   assert.equal(prepared.canPublish, true);
-  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 3, 'both preparation boundaries reread current activity eligibility');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 4, 'both preparation boundaries reread current activity eligibility');
   assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length, 3, 'detail browsing cannot replace either exact preparation check');
   assert.equal(h.state.queries, 0, 'an activity hashtag uses its verified detail rather than a separate generic topic search');
   const record = Object.values(h.values).flatMap(value => Object.values(value?.preparations || {})).find(value => value.preparationId === prepared.preparationId);

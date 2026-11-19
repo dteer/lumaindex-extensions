@@ -49,7 +49,8 @@ export function mountActivities({container, current, identity, cacheScope = iden
   const actions = node('div', 'studio-activities-pagination');
   const retry = node('button', 'studio-activities-retry', '重试'); retry.type = 'button'; retry.hidden = true;
   const more = node('button', 'studio-activities-more', '加载更多活动'); more.type = 'button'; more.hidden = true;
-  actions.append(retry, more); body.append(list, status, actions); container.replaceChildren(label, body);
+  const refresh = node('button', 'studio-activities-refresh', '刷新'); refresh.type = 'button'; refresh.setAttribute('aria-label', '刷新官方活动');
+  actions.append(retry, more, refresh); body.append(list, status, actions); container.replaceChildren(label, body);
 
   /** 取消当前账号的所有在途页；旧页面即使忽略取消也不能进入下一账号的缓存。 */
   function clearPages() {
@@ -180,29 +181,37 @@ export function mountActivities({container, current, identity, cacheScope = iden
     list.scrollLeft = offset;
     if (focusedID) [...list.children].find(card => card.dataset.activityId === focusedID)?.querySelector(focusedClass)?.focus({preventScroll: true});
     list.hidden = !items.length;
-    status.textContent = selectionTask?.view === view ? '正在确认活动话题…' : view.selectionMessage || view.error || (view.loading ? '正在读取官方活动…' : view.message || (items.length ? '' : '暂无可参加的官方活动'));
+    status.textContent = selectionTask?.view === view ? '正在确认活动话题…' : view.selectionMessage || view.error || (view.loading ? (view.refreshing ? '正在刷新官方活动…' : '正在读取官方活动…') : view.message || (items.length ? '' : '暂无可参加的官方活动'));
     status.hidden = !status.textContent;
-    retry.hidden = !view.error; retry.disabled = blocked() || view.loading;
-    more.hidden = !view.hasMore || view.loading || !!view.error; more.disabled = blocked();
-    actions.hidden = retry.hidden && more.hidden;
+    retry.hidden = !view.error; retry.disabled = blocked() || view.loading || !!selectionTask;
+    more.hidden = !view.hasMore || view.loading || !!view.error; more.disabled = blocked() || !!selectionTask;
+    refresh.disabled = blocked() || view.loading || !!selectionTask;
+    refresh.textContent = view.refreshing ? '刷新中…' : '刷新';
+    refresh.setAttribute('aria-label', view.refreshing ? '刷新中' : '刷新官方活动');
+    refresh.setAttribute('aria-busy', String(!!view.refreshing));
+    actions.hidden = false;
   }
 
-  /** 在成功追加后才推进游标；分页错误保留已有卡片和原位置。 */
-  async function load(view) {
-    if (!owns(view) || view.loading || blocked() || !supports('activities.list') || (view.loaded && !view.hasMore)) return;
-    const cursor = view.loaded ? view.cursor : null;
-    view.loading = true; view.error = ''; draw(view);
+  /** 手动刷新仅在成功后替换首屏；分页或刷新失败都保留已有卡片、游标和草稿。 */
+  async function load(view, replace = false) {
+    if (!owns(view) || view.loading || blocked() || selectionTask || !supports('activities.list') || (!replace && view.loaded && !view.hasMore)) return;
+    const cursor = replace || !view.loaded ? null : view.cursor;
+    if (replace) clearPages();
+    view.loading = true; view.refreshing = replace; view.failedRefresh = false; view.error = ''; view.selectionMessage = ''; draw(view);
     try {
       const result = await pageFor(view, cursor);
       if (!owns(view)) return;
       const fresh = result.items.filter(validItem);
+      if (replace) view.items = [];
       for (const item of fresh) if (!view.items.some(value => value.id === item.id)) view.items.push(item);
       view.cursor = result.nextCursor; view.hasMore = result.hasMore; view.loaded = true; view.message = result.message || '';
+      if (replace) list.scrollLeft = 0;
     } catch (error) {
       if (!owns(view) || error.name === 'AbortError') return;
+      view.failedRefresh = replace;
       view.error = typeof error.message === 'string' && /[\u3400-\u9fff]/u.test(error.message) && error.message.length < 350 ? error.message : '官方活动读取失败，请重试。';
     } finally {
-      if (owns(view)) { view.loading = false; draw(view); schedulePreload(); }
+      if (owns(view)) { view.loading = false; view.refreshing = false; draw(view); schedulePreload(); }
     }
   }
 
@@ -260,6 +269,7 @@ export function mountActivities({container, current, identity, cacheScope = iden
 
   /** 清除视图所有权但保留同账号已读取页；下一次 render 再绑定当前草稿。 */
   function close() {
+    if (state?.refreshing) clearPages();
     generation++; contextKey = ''; state = null;
     cancelSelection();
     detailController?.abort(); detailController = null;
@@ -282,7 +292,7 @@ export function mountActivities({container, current, identity, cacheScope = iden
     if (contextKey !== key || !state) {
       close(); contextKey = key;
       state = {identity: identity(), scope: nextScope, kind: current().kind, generation,
-        items: [], cursor: null, hasMore: false, loaded: false, loading: false, error: '', message: ''};
+        items: [], cursor: null, hasMore: false, loaded: false, loading: false, refreshing: false, failedRefresh: false, error: '', message: ''};
       list.scrollLeft = 0;
     }
     draw(state);
@@ -297,8 +307,9 @@ export function mountActivities({container, current, identity, cacheScope = iden
     if (event.target !== list || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault(); list.scrollBy({left: (event.key === 'ArrowLeft' ? -1 : 1) * list.clientWidth * 0.8, behavior: 'smooth'});
   }, {signal: listeners.signal});
-  retry.addEventListener('click', () => { if (state) void load(state); }, {signal: listeners.signal});
+  retry.addEventListener('click', () => { if (state) void load(state, state.failedRefresh); }, {signal: listeners.signal});
   more.addEventListener('click', () => { if (state) void load(state); }, {signal: listeners.signal});
+  refresh.addEventListener('click', () => { if (state) void load(state, true); }, {signal: listeners.signal});
   const resize = new ResizeObserver(schedulePreload); resize.observe(list);
   return {
     render, close,

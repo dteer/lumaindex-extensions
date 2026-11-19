@@ -11,7 +11,7 @@ const output = fileURLToPath(new URL('../output/playwright/', import.meta.url));
 await mkdir(output, {recursive: true});
 const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="/studio.css"><link rel="stylesheet" href="/studio-activities.css"><style>body{padding:24px;background:white}#activities{max-width:850px;margin:0}</style><div id="activities"></div><script type="module">
 import {mountActivities} from '/studio-activities.js';
-window.fixture={scope:'account-a',draft:{id:'draft-a',kind:'image',description:'',topics:[],activities:[]},calls:[],changes:0,failCursor:null,failDetail:false,failResolve:false,holdResolve:false,badResolve:false,resolvePending:[],hold:false,pending:[],blocked:false,supported:true};
+window.fixture={scope:'account-a',draft:{id:'draft-a',kind:'image',description:'',topics:[],activities:[]},calls:[],changes:0,failCursor:null,failFirst:false,catalog:null,failDetail:false,failResolve:false,holdResolve:false,badResolve:false,resolvePending:[],hold:false,pending:[],blocked:false,supported:true};
 const item=index=>({id:String(index),name:index===1?'宝藏经验分享活动':index===2?'寡门门主脱单卡池':'官方活动'+index,topicName:'活动话题'+index,heat:index===2?419:index*12345,disabled:index===8,description:index===8?'该活动需要额外的官方选择':''});
 const request=async(operation,params,options)=>{
   const scope=fixture.scope;fixture.calls.push({operation,params,scope});
@@ -26,9 +26,11 @@ const request=async(operation,params,options)=>{
     return{id:params.id,name:item(Number(params.id)).name,description:'官方活动说明\\n按规则发布作品。',topics:['活动话题'+params.id],startTime:'2026.11.01',endTime:'2026.12.01',rewardDescription:'优秀作品有机会获得平台推荐。'};
   }
   if(operation!=='activities.list')throw Error('Unexpected mutation');
+  const first=params.cursor===undefined, catalog=structuredClone(fixture.catalog);
+  if(first&&fixture.failFirst)throw Error('官方活动刷新失败，原列表已保留，请重试。');
   if(String(params.cursor)===fixture.failCursor)throw Error('活动分页读取失败，请重试。');
   if(fixture.hold)await new Promise(resolve=>fixture.pending.push(resolve));
-  const first=params.cursor===undefined;
+  if(first&&catalog)return catalog;
   return{items:scope==='account-b'?[{...item(21),name:'新账号活动'}]:first?Array.from({length:10},(_,i)=>item(i+1)):[item(10),item(11),item(12)],hasMore:scope!=='account-b'&&first,nextCursor:scope!=='account-b'&&first?'10':null};
 };
 window.activities=mountActivities({container:document.querySelector('#activities'),current:()=>fixture.draft,identity:()=>fixture.scope+':'+fixture.draft.id,cacheScope:()=>fixture.scope+':'+fixture.draft.kind,supports:()=>fixture.supported,blocked:()=>fixture.blocked,request,safeURL:url=>url,onChanged:()=>{fixture.changes++;activities.render();}});
@@ -90,6 +92,10 @@ try {
   await page.waitForFunction(() => fixture.resolvePending.length === 1);
   assert.equal(await first.locator('.studio-activity-add').getAttribute('aria-busy'), 'true');
   assert.equal(await page.locator('.studio-activity-add:disabled').count(), 10);
+  assert.equal(await page.getByRole('button', {name:'刷新官方活动',exact:true}).isDisabled(), true);
+  const listCallsDuringSelection = await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.list').length);
+  await page.evaluate(() => document.querySelector('.studio-activities-refresh').dispatchEvent(new Event('click')));
+  assert.equal(await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.list').length), listCallsDuringSelection);
   const pendingCalls = await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.resolve').length);
   await page.evaluate(() => { document.querySelector('.studio-activity-add').onclick(); document.querySelectorAll('.studio-activity-add')[1].onclick(); });
   assert.equal(await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.resolve').length), pendingCalls);
@@ -171,8 +177,85 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.studio-activity-card').length === 12);
   assert.equal(await page.evaluate(() => fixture.calls.length), beforeSwitch);
 
+  // 刷新只读取一次首屏，更新热度并替换旧列表；已选但不在新列表中的活动仍保留解除入口。
+  await page.locator('[data-activity-id="1"]').hover(); await page.locator('[data-activity-id="1"] .studio-activity-add').click();
+  await page.waitForFunction(() => fixture.draft.activities.length === 1);
+  await page.locator('[data-activity-id="2"]').hover(); await page.locator('[data-activity-id="2"] .studio-activity-add').click();
+  await page.waitForFunction(() => fixture.draft.activities.length === 2);
+  const selectedBeforeRefresh = await page.evaluate(() => ({draft: JSON.stringify(fixture.draft), changes: fixture.changes}));
+  await page.evaluate(() => {
+    fixture.catalog = {items:[{id:'1',name:'宝藏经验分享活动',heat:900},...Array.from({length:9},(_,i)=>({id:String(31+i),name:'刷新后的活动'+i,heat:500+i}))],hasMore:true,nextCursor:'fresh-next'};
+    fixture.hold = true;
+  });
+  const beforeRefresh = await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.list').length);
+  await page.getByRole('button', {name:'刷新官方活动',exact:true}).click();
+  await page.waitForFunction(() => fixture.pending.length === 1);
+  assert.equal(await page.getByRole('button', {name:'刷新中',exact:true}).isDisabled(), true);
+  assert.equal(await page.locator('.studio-activities-refresh').getAttribute('aria-busy'), 'true');
+  assert.equal(await page.locator('.studio-activity-card').count(), 12, 'loading retains the visible catalog');
+  await page.evaluate(() => { document.querySelector('.studio-activities-refresh').dispatchEvent(new Event('click')); activities.render(); });
+  assert.equal(await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.list').length), beforeRefresh + 1);
+  await page.evaluate(() => { fixture.hold=false; for(const finish of fixture.pending.splice(0))finish(); });
+  await page.waitForFunction(() => document.querySelector('[data-activity-id="1"] .studio-activity-heat')?.textContent === '热度：900');
+  assert.equal(await page.locator('.studio-activity-card').count(), 11);
+  assert.equal(await page.locator('[data-activity-id="12"]').count(), 0, 'refresh replaces rather than appends old rows');
+  assert.equal(await page.locator('[data-activity-id="31"]').count(), 1);
+  assert.equal(await page.locator('[data-activity-id="2"].is-selected').count(), 1);
+  assert.equal(await page.locator('.studio-activities-refresh').getAttribute('aria-busy'), 'false');
+  assert.deepEqual(await page.evaluate(() => ({draft: JSON.stringify(fixture.draft), changes: fixture.changes})), selectedBeforeRefresh);
+  await page.screenshot({path: output + 'studio-activities-refreshed.png'});
+
+  // 刷新失败保留列表、游标和选择；“重试”从首屏刷新，不误请求原来的下一页。
+  const visibleBeforeFailure = await page.locator('.studio-activities-list').textContent();
+  await page.evaluate(() => { fixture.failFirst=true; document.querySelector('.studio-activities-list').scrollLeft=45; });
+  const scrollBeforeFailure = await page.locator('.studio-activities-list').evaluate(element => element.scrollLeft);
+  await page.getByRole('button', {name:'刷新官方活动',exact:true}).click();
+  await page.locator('.studio-activities-retry').waitFor();
+  assert.equal(await page.locator('.studio-activities-list').textContent(), visibleBeforeFailure);
+  assert.equal(await page.locator('.studio-activities-list').evaluate(element => element.scrollLeft), scrollBeforeFailure);
+  assert.deepEqual(await page.evaluate(() => ({draft: JSON.stringify(fixture.draft), changes: fixture.changes})), selectedBeforeRefresh);
+  const afterRefreshFailure = await page.evaluate(() => fixture.calls.length);
+  await page.evaluate(() => { activities.render(); window.dispatchEvent(new Event('focus')); document.querySelector('.studio-activities-list').dispatchEvent(new Event('scroll')); });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await page.evaluate(() => fixture.calls.length), afterRefreshFailure, 'failure does not start an automatic refresh');
+  await page.evaluate(() => { fixture.failFirst=false; fixture.catalog.items[0].heat=990; });
+  await page.locator('.studio-activities-retry').click();
+  await page.waitForFunction(() => document.querySelector('[data-activity-id="1"] .studio-activity-heat')?.textContent === '热度：990');
+  assert.equal(await page.evaluate(() => fixture.calls.filter(call => call.operation === 'activities.list').at(-1).params.cursor), undefined);
+  assert.deepEqual(await page.evaluate(() => ({draft: JSON.stringify(fixture.draft), changes: fixture.changes})), selectedBeforeRefresh);
+  await page.locator('.studio-activities-more').click();
+  await page.waitForFunction(() => fixture.calls.filter(call => call.operation === 'activities.list').at(-1).params.cursor === 'fresh-next');
+  await page.waitForFunction(() => !document.querySelector('.studio-activities-refresh').disabled);
+  await page.evaluate(() => { fixture.blocked=true; activities.render(); });
+  assert.equal(await page.getByRole('button', {name:'刷新官方活动',exact:true}).isDisabled(), true);
+  const blockedCalls = await page.evaluate(() => fixture.calls.length);
+  await page.evaluate(() => document.querySelector('.studio-activities-refresh').dispatchEvent(new Event('click')));
+  assert.equal(await page.evaluate(() => fixture.calls.length), blockedCalls);
+  await page.evaluate(() => { fixture.blocked=false; activities.render(); });
+
+  // 换草稿时旧刷新即使忽略取消也不能覆盖新视图，旧草稿的选择没有被刷新写入。
+  await page.evaluate(() => { fixture.hold=true; fixture.catalog={items:[{id:'80',name:'旧刷新迟到活动'}],hasMore:false,nextCursor:null}; });
+  await page.getByRole('button', {name:'刷新官方活动',exact:true}).click();
+  await page.waitForFunction(() => fixture.pending.length === 1);
+  await page.evaluate(() => {
+    fixture.previousDraft=fixture.draft; fixture.hold=false;
+    fixture.catalog={items:[{id:'81',name:'新草稿当前活动'}],hasMore:false,nextCursor:null};
+    fixture.draft={id:'draft-refresh-new',kind:'image',description:'新草稿',topics:[],activities:[]}; activities.render();
+  });
+  await page.locator('.studio-activity-name').filter({hasText:'新草稿当前活动'}).waitFor();
+  await page.evaluate(() => { for(const finish of fixture.pending.splice(0))finish(); });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await page.locator('.studio-activity-name').textContent(), '新草稿当前活动');
+  assert.equal(await page.evaluate(() => JSON.stringify(fixture.previousDraft)), selectedBeforeRefresh.draft);
+  assert.equal(await page.evaluate(() => fixture.draft.activities.length), 0);
+  const beforeReopen = await page.evaluate(() => fixture.calls.length);
+  await page.evaluate(() => { activities.close(); activities.render(); window.dispatchEvent(new Event('focus')); });
+  await page.locator('.studio-activity-name').filter({hasText:'新草稿当前活动'}).waitFor();
+  assert.equal(await page.evaluate(() => fixture.calls.length), beforeReopen, 'reopening uses the current catalog until a manual refresh');
+
   // 账号改变使旧在途页失效，即使请求实现忽略 signal，也不会污染新账号。
-  await page.evaluate(() => { fixture.scope='account-slow';fixture.hold=true;activities.render(); });
+  await page.evaluate(() => { fixture.catalog=null; fixture.hold=true; });
+  await page.getByRole('button', {name:'刷新官方活动',exact:true}).click();
   await page.waitForFunction(() => fixture.pending.length === 1);
   await page.evaluate(() => { fixture.scope='account-b';fixture.hold=false;activities.render(); });
   await page.locator('.studio-activity-name').filter({hasText:'新账号活动'}).waitFor();
@@ -180,12 +263,17 @@ try {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   assert.equal(await page.locator('.studio-activity-card').count(), 1);
   assert.equal(await page.locator('.studio-activity-name').textContent(), '新账号活动');
+  assert.equal(await page.getByRole('button', {name:'刷新官方活动',exact:true}).isVisible(), true);
   await page.setViewportSize({width: 360,height:600});
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({path: output + 'studio-activities-narrow.png'});
-  await page.evaluate(() => { activities.dispose(); activities.dispose(); });
+  await page.evaluate(() => { fixture.hold=true; });
+  await page.getByRole('button', {name:'刷新官方活动',exact:true}).click();
+  await page.waitForFunction(() => fixture.pending.length === 1);
+  await page.evaluate(() => { activities.dispose(); activities.dispose(); for(const finish of fixture.pending.splice(0))finish(); });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   assert.equal(await page.locator('.studio-activity-dialog').count(), 0);
   assert.equal(await page.locator('#activities').textContent(), '');
   assert.deepEqual(errors, []);
-  console.log('activities UI passed: real fields, nonduplicating topic, selection limits, details/retry, early pagination/cache, account fence, disabled activities and narrow layout');
+  console.log('activities UI passed: manual refresh/replacement/retry, selection preservation, stale response isolation, real fields, topic limits, details, pagination/cache, disabled controls and narrow layout');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

@@ -247,8 +247,8 @@ export function createStudioEngine({storage, send, sessionStatus, publicationSto
   async function query(operation, input, context, origin) {
     const params = queryParams(operation, input);
     const pageKey = JSON.stringify([origin, context.account.id, context.binding?.key, operation, params]);
-    // 图片推荐依赖最近一次完整上传快照，不能按文字参数复用旧推荐。
-    const reusable = !!context.binding && !(operation === 'topics.search' && !params.query);
+    // 活动列表由页面复用，手动刷新必须读取平台；图片推荐不能按文字参数复用旧上传结果。
+    const reusable = !!context.binding && operation !== 'activities.list' && !(operation === 'topics.search' && !params.query);
     const previous = reusable ? queryPages.get(pageKey) : null;
     const page = previous && fresh(previous.queriedAt, QUERY_PAGE_TTL) ? previous
       : {data: await fetchCandidates(operation, params, context, origin), queriedAt: now()};
