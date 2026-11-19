@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import {buildAIApplication} from '../app/studio-ai-apply.js';
+import {emptyDraft, sanitizeDraft, publicationDraft, contentSignature, StudioStore} from '../app/studio-state.js';
+const draft = emptyDraft();
+draft.title = '原标题'; draft.description = '原文 #摄影活动';
+draft.activities = [{id: '10', name: '摄影活动', topic: {id: '20', name: '摄影活动'}}];
+draft.topics = [{id: '20', name: '摄影活动'}];
+draft.music = {id: '30', name: '手选歌曲'}; draft.location = {id: '40', name: '手选地点'};
+draft.hotspot = '原热点'; draft.aiResourcePrompts = {music: '纯音乐', hotspot: '只选徒步'};
+const result = {title: '新标题', description: '#有序图库\n山野记录\n#20261115', topics: [{id: '0', name: '有序图库'}, {id: '0', name: '20261115'}],
+  activity: {id: '11', name: '新活动', topic: {id: '21', name: '周末徒步'}}, hotspot: {id: 'hotspot-0', name: '徒步赏秋'},
+  music: {id: '31', name: 'AI歌曲', previewURL: 'https://fixture.test/audio'}, location: {id: '41', name: 'AI地点', cityCode: '441300', cityName: '惠州市'}};
+const original = structuredClone(draft);
+const copy = buildAIApplication(draft, result, {copy: true});
+assert.equal(copy.title, '新标题'); assert.match(copy.description, /#摄影活动\n#20261115$/);
+for (const key of ['music','location','hotspot','activities']) assert.deepEqual(copy[key], draft[key]);
+assert.deepEqual(draft, original, 'building an application never mutates the original draft');
+const all = buildAIApplication(draft, result, {copy: true, activity: true, music: true, location: true, hotspot: true});
+assert.deepEqual(all.activities, [result.activity]); assert.match(all.description, /#周末徒步\n#20261115$/);
+assert.equal(all.hotspot, '徒步赏秋'); assert.deepEqual(all.music, {id:'31',name:'AI歌曲'});
+assert.equal(all.topics.some(item=>item.name==='摄影活动'), false);
+const none = buildAIApplication(draft, {...result, activity:null, hotspot:null}, {activity:true, hotspot:true});
+assert.deepEqual(none.activities, []); assert.equal(none.hotspot, ''); assert.equal(none.description, '原文'); assert.deepEqual(none.topics, []);
+const edited = buildAIApplication(draft, {...result, description:'用户编辑正文'}, {copy:true,activity:true});
+assert.equal(edited.topics.some(item=>item.name==='20261115'), false, 'removed copy tags never get an invisible binding');
+assert.throws(()=>buildAIApplication(draft,{...result,description:'长'.repeat(1000)},{copy:true,activity:true}),/1000/);
+assert.deepEqual(draft, original, 'failed validation never partially applies');
+assert.deepEqual(sanitizeDraft(draft).aiResourcePrompts, draft.aiResourcePrompts);
+assert.equal(Object.hasOwn(publicationDraft(draft), 'aiResourcePrompts'), false);
+assert.equal(contentSignature(draft), contentSignature({...draft,aiResourcePrompts:{music:'不同要求',hotspot:''}}), 'prompt edits do not invalidate upload preparation');
+assert.equal(buildAIApplication({...draft,title:'长'.repeat(21),description:'长'.repeat(1001)}, result, {music:true}).music.id, '31', 'unrelated existing copy errors do not block selecting music');
+const musicOnly = buildAIApplication({...draft, description:'旧正文缺少活动标签'}, result, {music:true});
+assert.equal(musicOnly.description, '旧正文缺少活动标签');
+assert.deepEqual(musicOnly.topics, draft.topics, 'music-only application does not repair unrelated activity bindings');
+const store=new StudioStore({version:2,activeDraftId:draft.id,drafts:[draft]},async()=>{});
+assert.deepEqual(store.copy().aiResourcePrompts,draft.aiResourcePrompts);
+assert.deepEqual(emptyDraft().aiResourcePrompts,{music:'',hotspot:''});
+console.log('AI application: atomic selected scopes, manual resources, activity topics, null choices and draft-only prompts passed');

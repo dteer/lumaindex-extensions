@@ -1,4 +1,4 @@
-// publication-store 仅保存实验插件的发布快照及回执，不发起网络请求。
+// publication-store 仅保存工作台的发布快照及回执，不发起网络请求。
 const STORAGE_KEY = 'luma-studio-publications-v1';
 const PREPARATION_TTL = 30 * 60 * 1000;
 const FINAL_STATUSES = new Set(['published', 'scheduled', 'processing', 'failed', 'unknown']);
@@ -20,17 +20,9 @@ function copyJSON(value, label) {
   } catch { throw failure('INVALID_SNAPSHOT', `${label}无法保存，请重新准备作品。`); }
 }
 
-// rejectSecrets 拒绝凭据字段；JSON 字符串中的嵌套对象也执行相同校验。
+// rejectSecrets 只检查结构化凭据字段；标题、正文和回执文案始终作为文本保存。
 function rejectSecrets(value, depth = 0) {
   if (depth > 60) throw failure('INVALID_SNAPSHOT', '发布数据结构过深，请重新准备作品。');
-  if (typeof value === 'string') {
-    if (/^\s*[\[{]/.test(value)) {
-      let nested;
-      try { nested = JSON.parse(value); } catch { return; }
-      rejectSecrets(nested, depth + 1);
-    }
-    return;
-  }
   if (!value || typeof value !== 'object') return;
   for (const [key, item] of Object.entries(value)) {
     if (/(cookie|upload[_-]?auth|secret|authorization|access[_-]?token|refresh[_-]?token|session[_-]?key|password)/i.test(key)) {

@@ -51,6 +51,9 @@
 .music-field #music-name { flex: 1; }
 .extended-panel .location-field-row { margin-top: 24px; }
 .hotspot-field-row { margin-top: 24px; }
+.hotspot-list-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hotspot-refresh { margin-right: 12px; padding: 3px 6px; border: 0; background: transparent; color: #777983; font-size: 12px; }
+.hotspot-refresh[hidden] { display: none; }
 .hotspot-label { display: flex; align-items: center; gap: 4px; min-height: 36px; font-size: 14px; white-space: nowrap; }
 .hotspot-popover .resource-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hotspot-heat { flex-shrink: 0; color: #999aa2; font-size: 12px; }

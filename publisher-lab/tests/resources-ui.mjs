@@ -36,12 +36,20 @@ window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>!f
 }});
 window.setContext=({account=fixture.account,id=fixture.draft.id,kind=fixture.draft.kind})=>{fixture.account=account;fixture.draft=emptyDraft(id);fixture.draft.kind=kind;controls.render();};
 controls.render();`);
+const locationAccountFixture = resourceFixture(`
+window.fixture={account:'A',draft:{id:'city-draft',kind:'image',assets:[],topics:[{id:'saved-topic',name:'已存话题'}],mentions:[],hotspot:'已存热点',location:null,settings:{declarations:[]}},calls:[]};
+window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>true,safeURL:()=>'',identity:()=>fixture.account+':'+fixture.draft.id,cacheScope:()=>fixture.account+':'+fixture.draft.kind,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params,{signal})=>{
+  fixture.calls.push({operation,account:fixture.account,...params,signal});
+  if(operation!=='locations.search')throw Error('Unexpected city fixture operation: '+operation);
+  if(fixture.account==='A')return new Promise(resolve=>{fixture.releaseOld=()=>resolve({items:[{id:'old-poi',name:'旧账号迟到地点'}],nextCursor:null});});
+  return {items:[{id:fixture.account+'-poi',name:fixture.account+'的地点'}],nextCursor:null};
+}});controls.render();`);
 const topicFixture = resourceFixture(`
-window.fixture={draft:{id:'topic-draft',kind:'image',assets:[],description:'',topics:[],mentions:[],settings:{declarations:[]}},calls:[],online:true,mode:'empty'};
-window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>fixture.online,safeURL:()=>'',identity:()=> 'topics',blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
+window.fixture={draft:{id:'topic-draft',kind:'image',assets:[],description:'',topics:[],mentions:[],settings:{declarations:[]}},account:'A',calls:[],online:true,mode:'empty',holdRecommendation:false};
+window.controls=mountResourceControls({current:()=>fixture.draft,supports:()=>fixture.online,safeURL:()=>'',identity:()=>fixture.account+':'+fixture.draft.id,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
   fixture.calls.push({operation,...params});
   if(operation!=='topics.search')throw Error('Unexpected topic fixture operation: '+operation);
-  if(!params.query)return {items:[],nextCursor:null};
+  if(!params.query)return fixture.holdRecommendation?new Promise(resolve=>{fixture.releaseRecommendation=items=>resolve({items,nextCursor:null});}):{items:[],nextCursor:null};
   if(fixture.mode==='error')throw Error('合成在线查询失败，本地话题仍可添加。');
   if(fixture.mode==='existing')return {items:[{id:0,name:params.query,viewCount:0},{id:'existing-id',name:params.query,viewCount:125000}],nextCursor:null};
   if(fixture.mode==='names')return {items:[{id:0,name:'新话题甲',viewCount:0},{id:0,name:'新话题乙',viewCount:0}],nextCursor:null};
@@ -51,16 +59,21 @@ document.getElementById('description').addEventListener('input',event=>{fixture.
 controls.render();`);
 const hotspotFixture = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/studio-resources.css"><link rel="stylesheet" href="/studio-help.css"><div id="hotspot"></div><script type="module">
 import {mountHotspot} from '/studio-hotspot.js';
-window.fixture={scope:'account-a',draft:{id:'hotspot-a',kind:'image',hotspot:'原来选中的热点'},calls:[],pending:[],offline:false};
-window.controls=mountHotspot({container:document.querySelector('#hotspot'),current:()=>fixture.draft,identity:()=>fixture.scope+':'+fixture.draft.id,supports:()=>!fixture.offline,blocked:()=>false,changed:()=>controls.render(),request:async(operation,params)=>{
-  fixture.calls.push({operation,...params});
+window.fixture={scope:'account-a',draft:{id:'hotspot-a',kind:'image',assets:[{id:'asset-a'}],hotspot:'原来选中的热点'},calls:[],pending:[],pendingDefaults:[],offline:false,latest:0,clock:10000,holdDefault:false,failDefault:false};
+window.controls=mountHotspot({container:document.querySelector('#hotspot'),current:()=>fixture.draft,identity:()=>fixture.scope+':'+fixture.draft.id,supports:()=>!fixture.offline,blocked:()=>false,changed:()=>controls.render(),now:()=>fixture.clock,request:async(operation,params,{signal})=>{
+  fixture.calls.push({operation,...params,signal});
   if(params.query==='慢')return new Promise(resolve=>fixture.pending.push(()=>resolve({items:[{name:'旧账号迟到热点'}]})));
-  return {items:[]};
+  if(params.query)return {items:[{name:'关键词热点'}]};
+  const name='当前热点'+(++fixture.latest);
+  const result=()=>{if(fixture.failDefault)throw Error('合成热点更新失败');return {items:[{name}]};};
+  if(fixture.holdDefault)return new Promise((resolve,reject)=>fixture.pendingDefaults.push(()=>{try{resolve(result());}catch(error){reject(error);}}));
+  return result();
 }});controls.render();window.ready=true;</script>`;
 await mkdir(output, {recursive: true});
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   if (url.pathname === '/resource-hotspot.html') { response.setHeader('Content-Type', 'text/html'); response.end(hotspotFixture); return; }
+  if (url.pathname === '/resource-location-account.html') { response.setHeader('Content-Type', 'text/html'); response.end(locationAccountFixture); return; }
   if (['/resource-race.html', '/resource-cache.html', '/resource-topics.html'].includes(url.pathname)) { response.setHeader('Content-Type', 'text/html'); response.end(url.pathname === '/resource-race.html' ? paginationFixture : url.pathname === '/resource-topics.html' ? topicFixture : cacheFixture); return; }
   if (/^\/api\/v1\/assets\/fixture-(one|two)\//.test(url.pathname)) {
     response.setHeader('Content-Type', 'image/svg+xml'); response.end(picture); return;
@@ -131,7 +144,7 @@ try {
       else if (url.pathname === '/web/api/media/hashtag/rec/') data = {status_code: 0, challenge_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2203', cha_name: '海边散步', view_count: 32000}]};
       else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '2201', cha_name: '摄影日常', view_count: 125000}, {cid: '2202', cha_name: '摄影技巧', view_count: 21000}]};
       else if (url.pathname === '/aweme/v1/hotspot/search/') data = {status_code:0,sentences:[{word:'城市里的温暖瞬间',hot_value:125000,word_cover:{url_list:['https://media.example.test/hotspot.svg']}},{word:'城市漫步发现新风景',hot_value:0}]};
-      else if (url.pathname === '/aweme/v1/hotspot/recommend/') data = {status_code:0,rec_sentences:[{word:'推荐的生活热点',hot_value:8900}],all_sentences:[{word:'推荐的生活热点',hot_value:8900},{word:'另一个官方热点'}]};
+      else if (url.pathname === '/aweme/v1/hotspot/recommend/') data = {status_code:0,rec_sentences:[{word:'推荐的生活热点',hot_value:8900,word_cover:{url_list:['https://media.example.test/hotspot.svg']}}],all_sentences:[{word:'推荐的生活热点',hot_value:8900},{word:'另一个官方热点'}]};
       else if (url.pathname === '/web/api/v2/user/recent/contact/') data = {status_code: 0, user_list: [
         {uid:'5101',nickname:'摄影同学',follower_count:139,unique_id:'photo_test',short_id:'1001',avatar_thumb:{url_list:['https://media.example.test/contact.svg']}},
         {uid:'5102',nickname:'零粉丝新朋友',follower_count:0,short_id:'1002'},
@@ -161,20 +174,24 @@ try {
   await page.waitForFunction(() => document.body.dataset.phase === 'editing' && !document.body.classList.contains('busy'));
   assert.equal(await page.locator('#studio-gallery .studio-gallery-image').count(), 2);
   assert.equal(await page.locator('#studio-gallery').innerText(), '');
-  assert.equal(await page.locator('#douyin-preview .studio-phone').count(), 1);
-  assert.match(await page.locator('.studio-phone-identity').textContent(), /摄影日志/);
+  assert.equal(await page.locator('.preview-column').isVisible(), true, 'normal editing retains the publishing preview alongside material previews');
+  assert.equal(await page.locator('.studio-phone-segment').count(), 2);
   await page.locator('#title').fill('海边摄影日常');
 
   // 合集读取每个分页一次，后续关键词在已读候选中筛选，封面与总数来自平台真实字段。
   const requestCount = pathname => page.evaluate(path => window.__resourcesUI.requests.filter(item => new URL(item.url).pathname === path).length, pathname);
 
-  // 没有完整上传检查点时，空图文查询仅提示输入；搜索和选择不上传，也不改正文话题。
+  // 未上传也可直接读取当前热点；默认列表短期复用，搜索和选择不上传，也不改正文话题。
   const hotspotField = page.getByRole('button', {name:'关联热点',exact:true});
   const hotspotPopup = page.locator('#studio-hotspot .hotspot-popover'), hotspotInput = page.getByRole('searchbox', {name:'搜索热点词',exact:true});
   const beforeHotspot = await page.evaluate(() => ({requests:__resourcesUI.requests.length,description:document.querySelector('#description').value,topics:__resourcesUI.state.drafts[0].topics}));
   await hotspotField.click();
-  await hotspotPopup.locator('.resource-message').filter({hasText:'输入热点词搜索'}).waitFor();
-  assert.equal(await page.evaluate(() => __resourcesUI.requests.length), beforeHotspot.requests, 'empty image query without uploaded frames sends no platform request');
+  await hotspotPopup.getByRole('option').filter({hasText:'推荐的生活热点'}).waitFor();
+  assert.equal(await hotspotPopup.locator('.hotspot-heading').textContent(), '全部热点');
+  assert.equal(await page.evaluate(() => __resourcesUI.requests.length), beforeHotspot.requests + 1, 'opening without uploaded frames reads the current platform list once');
+  const initialHotspotList = await page.evaluate(() => __resourcesUI.requests.find(item => new URL(item.url).pathname === '/aweme/v1/hotspot/recommend/'));
+  assert.equal(new URL(initialHotspotList.url).searchParams.get('zip_uri'), '');
+  assert.equal(await hotspotPopup.locator('.hotspot-cover img').first().getAttribute('src'), 'https://media.example.test/hotspot.svg');
   await hotspotInput.fill('城市');
   await hotspotPopup.getByRole('option').filter({hasText:'城市里的温暖瞬间'}).waitFor();
   assert.equal(await hotspotPopup.locator('.hotspot-heat').first().textContent(), '12.5万 在看');
@@ -189,12 +206,17 @@ try {
   assert.equal(new URL(hotspotSearch.url).searchParams.get('query'), '城市');
   assert.equal(new URL(hotspotSearch.url).searchParams.get('count'), '50');
 
-  // 使用真实已有检查点才读取推荐；选择仍是纯字符串，失败和离线清除均不污染其它草稿字段。
+  // 重开列表立即复用默认结果；手动刷新后有检查点时带真实图片 URI，不按原选词过滤。
   await page.evaluate(() => { __resourcesUI.framesAvailable=true; });
   await hotspotField.click();
   await hotspotPopup.getByRole('option').filter({hasText:'推荐的生活热点'}).waitFor();
   assert.equal(await hotspotPopup.getByRole('option').count(), 2, 'recommended and complete catalogs are deduplicated by name');
-  const hotspotRecommendation = await page.evaluate(() => __resourcesUI.requests.find(item => new URL(item.url).pathname === '/aweme/v1/hotspot/recommend/'));
+  assert.equal(await hotspotInput.inputValue(), '');
+  const beforeManualHotspot = await requestCount('/aweme/v1/hotspot/recommend/');
+  assert.equal(beforeManualHotspot, 1, 'reopening within five minutes reuses the default list');
+  await page.getByRole('button', {name:'刷新热点',exact:true}).click();
+  await page.waitForFunction(() => __resourcesUI.requests.filter(item => new URL(item.url).pathname === '/aweme/v1/hotspot/recommend/').length === 2);
+  const hotspotRecommendation = await page.evaluate(() => __resourcesUI.requests.filter(item => new URL(item.url).pathname === '/aweme/v1/hotspot/recommend/').at(-1));
   assert.equal(new URL(hotspotRecommendation.url).searchParams.get('zip_uri'), 'fixture-image-resource');
   await page.setViewportSize({width:560,height:850});
   await hotspotPopup.scrollIntoViewIfNeeded();
@@ -486,29 +508,158 @@ try {
   ]);
   await race.close();
 
-  // 热点在途请求即使忽略取消，切账号后也不能展示旧结果或改写选中值；离线清除独立可用。
+  // 城市筛选属于当前草稿：只选城市后换账号仍保留，但旧账号请求必须取消并丢弃迟到结果。
+  const cityAccount = await browser.newPage();
+  cityAccount.on('pageerror', error => errors.push(error.message));
+  await cityAccount.goto(origin + '/resource-location-account.html');
+  await cityAccount.waitForFunction(() => window.ready);
+  await cityAccount.locator('#location-city').click();
+  await cityAccount.locator('#city-popover input').fill('上海');
+  await cityAccount.locator('#city-popover [role=option]').filter({hasText:'上海市'}).click();
+  assert.equal(await cityAccount.locator('#location-city').textContent(), '上海市');
+  assert.equal(await cityAccount.evaluate(() => fixture.draft.location), null, 'choosing only a city does not invent a saved POI');
+  assert.equal(await cityAccount.evaluate(() => fixture.calls.length), 0);
+  const cityOnlyDraft = await cityAccount.evaluate(() => JSON.stringify(fixture.draft));
+  await cityAccount.locator('#location-popover input').fill('旧查询');
+  await cityAccount.waitForFunction(() => typeof fixture.releaseOld === 'function');
+  await cityAccount.evaluate(() => { fixture.account='B'; controls.render(); });
+  assert.equal(await cityAccount.evaluate(() => fixture.calls[0].signal.aborted), true);
+  assert.equal(await cityAccount.locator('#location-popover').isHidden(), true);
+  assert.equal(await cityAccount.locator('#location-city').textContent(), '上海市', 'account switch retains the unsaved city filter');
+  assert.equal(await cityAccount.evaluate(() => JSON.stringify(fixture.draft)), cityOnlyDraft, 'account switch preserves saved topics/hotspot and the absence of a POI');
+  await cityAccount.locator('#search-location').click();
+  await cityAccount.locator('#location-popover input').fill('新查询');
+  await cityAccount.locator('#location-popover [role=option]').filter({hasText:'B的地点'}).waitFor();
+  assert.deepEqual(await cityAccount.evaluate(() => fixture.calls.map(({account,query,cityCode,cityName}) => ({account,query,cityCode,cityName}))), [
+    {account:'A',query:'旧查询',cityCode:'310100',cityName:'上海市'},
+    {account:'B',query:'新查询',cityCode:'310100',cityName:'上海市'},
+  ]);
+  await cityAccount.evaluate(() => fixture.releaseOld());
+  await cityAccount.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await cityAccount.locator('#location-popover [role=option]').count(), 1);
+  assert.equal(await cityAccount.locator('#location-popover [role=option]').textContent(), 'B的地点');
+  await cityAccount.locator('#location-popover [role=option]').click();
+  const selectedCityDraft = await cityAccount.evaluate(() => JSON.stringify(fixture.draft));
+  await cityAccount.evaluate(() => { fixture.account='C'; controls.render(); });
+  assert.equal(await cityAccount.evaluate(() => JSON.stringify(fixture.draft)), selectedCityDraft, 'a later account switch also preserves the selected location');
+  assert.equal(await cityAccount.locator('#location-name').textContent(), 'B的地点');
+  await cityAccount.evaluate(() => {
+    fixture.previousDraft=fixture.draft;
+    fixture.draft={id:'new-city-draft',kind:'image',assets:[],topics:[],mentions:[],hotspot:'',location:null,settings:{declarations:[]}};
+    controls.render();
+  });
+  assert.equal(await cityAccount.locator('#location-city').textContent(), '选择城市', 'a different draft starts with its own empty city filter');
+  await cityAccount.evaluate(() => { fixture.draft=fixture.previousDraft; controls.render(); });
+  assert.equal(await cityAccount.locator('#location-city').textContent(), '上海市', 'returning to a draft restores the saved location city');
+  assert.equal(await cityAccount.evaluate(() => JSON.stringify(fixture.draft)), selectedCityDraft);
+  assert.equal(await cityAccount.evaluate(() => fixture.calls.length), 2, 'switching accounts/drafts itself never queries locations');
+  await cityAccount.close();
+
+  // 默认热点五分钟内直接复用；过期或手动刷新保留旧列表，关闭重开复用同一在途请求。
   const hotspotRace = await browser.newPage();
   hotspotRace.on('pageerror', error => errors.push(error.message));
+  const openHotspots = () => hotspotRace.getByRole('button', {name:'关联热点',exact:true}).click();
+  const hotspotSearchInput = hotspotRace.getByRole('searchbox', {name:'搜索热点词',exact:true});
+  const hotspotRefresh = hotspotRace.getByRole('button', {name:'刷新热点',exact:true});
+  const releaseDefaults = () => hotspotRace.evaluate(() => { for(const finish of fixture.pendingDefaults.splice(0))finish(); });
   await hotspotRace.goto(origin + '/resource-hotspot.html');
   await hotspotRace.waitForFunction(() => window.ready);
-  await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).click();
-  await hotspotRace.getByRole('searchbox', {name:'搜索热点词',exact:true}).fill('慢');
+  await openHotspots();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点1'}).waitFor();
+  assert.equal(await hotspotRace.locator('.hotspot-heading').textContent(), '全部热点');
+  assert.equal(await hotspotSearchInput.inputValue(), '', 'opening a saved selection does not search its old word');
+  await hotspotSearchInput.fill('关键词');
+  await hotspotRace.getByRole('option').filter({hasText:'关键词热点'}).waitFor();
+  assert.equal(await hotspotRace.locator('.hotspot-heading').textContent(), '搜索结果');
+  assert.equal(await hotspotRefresh.isHidden(), true);
+  await hotspotSearchInput.fill('');
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点1'}).waitFor();
+  await hotspotRace.keyboard.press('Escape'); await openHotspots();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点1'}).waitFor();
+  assert.deepEqual(await hotspotRace.evaluate(() => fixture.calls.map(call => call.query)), ['', '关键词']);
+
+  await hotspotRace.evaluate(() => { fixture.holdDefault=true; fixture.failDefault=true; });
+  await hotspotRefresh.click();
+  assert.equal(await hotspotRace.getByRole('option').first().textContent(), '当前热点1', 'manual refresh leaves the last successful list available');
+  assert.equal(await hotspotRefresh.isDisabled(), true);
+  await releaseDefaults();
+  await hotspotRace.locator('.resource-message').filter({hasText:'合成热点更新失败'}).waitFor();
+  assert.equal(await hotspotRace.getByRole('option').first().textContent(), '当前热点1');
+  await hotspotRace.evaluate(() => { fixture.failDefault=false; });
+  await hotspotRace.getByRole('button', {name:'重试',exact:true}).click(); await releaseDefaults();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点3'}).waitFor();
+  assert.equal(await hotspotRace.evaluate(() => fixture.draft.hotspot), '原来选中的热点', 'updates never replace the saved selection');
+
+  await hotspotRace.keyboard.press('Escape');
+  await hotspotRace.evaluate(() => { fixture.clock += 5*60*1000; });
+  await openHotspots();
+  assert.equal(await hotspotRace.getByRole('option').first().textContent(), '当前热点3', 'expired list is visible while the new request is pending');
+  await hotspotRace.locator('.resource-message').filter({hasText:'正在更新'}).waitFor();
+  const pendingDefaultCount = await hotspotRace.evaluate(() => fixture.calls.length);
+  await hotspotRace.keyboard.press('Escape'); await openHotspots();
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), pendingDefaultCount, 'rapid reopen shares the pending default request');
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.at(-1).signal.aborted), false, 'closing does not cancel a reusable default read');
+  await releaseDefaults();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点4'}).waitFor();
+
+  // 明确失效会重读；关闭后返回的默认结果仍可缓存，下一次打开不再等待。
+  await hotspotRace.evaluate(() => controls.invalidate());
+  await hotspotRace.waitForFunction(() => fixture.pendingDefaults.length===1);
+  await hotspotRace.keyboard.press('Escape'); await releaseDefaults();
+  const closedDefaultCount = await hotspotRace.evaluate(() => fixture.calls.length);
+  await openHotspots();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点5'}).waitFor();
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), closedDefaultCount);
+
+  // 上传快照失效只影响默认列表，不能吞掉正在进行的关键词搜索。
+  await hotspotSearchInput.fill('慢');
   await hotspotRace.waitForFunction(() => fixture.pending.length === 1);
-  await hotspotRace.evaluate(() => {
-    fixture.previousDraft=fixture.draft; fixture.scope='account-b';
-    fixture.draft={id:'hotspot-b',kind:'image',hotspot:'新账号已选热点'}; controls.render();
-    for(const finish of fixture.pending.splice(0))finish();
-  });
-  await hotspotRace.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
-  assert.equal(await hotspotRace.locator('.hotspot-popover').isHidden(), true);
-  assert.equal(await hotspotRace.getByRole('option').count(), 0);
-  assert.equal(await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).textContent(), '新账号已选热点');
-  assert.equal(await hotspotRace.evaluate(() => fixture.previousDraft.hotspot), '原来选中的热点');
+  await hotspotRace.evaluate(() => { controls.invalidate(); for(const finish of fixture.pending.splice(0))finish(); });
+  await hotspotRace.getByRole('option').filter({hasText:'旧账号迟到热点'}).waitFor();
+
+  // 账号、草稿、素材范围改变均取消并清空默认缓存；不接收忽略取消的旧响应。
+  for (const change of ['account','draft','assets']) {
+    await hotspotRace.goto(origin + '/resource-hotspot.html'); await hotspotRace.waitForFunction(() => window.ready);
+    await hotspotRace.evaluate(() => { fixture.holdDefault=true; }); await openHotspots();
+    await hotspotRace.waitForFunction(() => fixture.pendingDefaults.length===1);
+    await hotspotRace.evaluate(change => {
+      if(change==='account')fixture.scope='account-b';
+      if(change==='draft')fixture.draft={...fixture.draft,id:'hotspot-b'};
+      if(change==='assets')fixture.draft.assets=[{id:'asset-b'}];
+      controls.render();
+    },change);
+    assert.equal(await hotspotRace.evaluate(() => fixture.calls[0].signal.aborted), true);
+    await releaseDefaults();
+    await hotspotRace.evaluate(() => { fixture.holdDefault=false; }); await openHotspots();
+    await hotspotRace.getByRole('option').filter({hasText:'当前热点2'}).waitFor();
+    assert.equal(await hotspotRace.getByRole('option').filter({hasText:'当前热点1'}).count(), 0);
+    assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), 2);
+  }
+  // 即便调用方尚未来得及 render，旧范围的缓存与 Promise 也不能被新范围复用。
+  await hotspotRace.goto(origin + '/resource-hotspot.html'); await hotspotRace.waitForFunction(() => window.ready);
+  await hotspotRace.evaluate(() => { fixture.holdDefault=true; }); await openHotspots();
+  await hotspotRace.keyboard.press('Escape');
+  await hotspotRace.evaluate(() => { fixture.scope='account-b'; }); await openHotspots();
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), 2);
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls[0].signal.aborted), true);
+  await releaseDefaults();
+  await hotspotRace.getByRole('option').filter({hasText:'当前热点2'}).waitFor();
+
+  await hotspotSearchInput.fill('慢'); await hotspotRace.waitForFunction(() => fixture.pending.length === 1);
+  await hotspotRace.keyboard.press('Escape');
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.at(-1).signal.aborted), true, 'keyword searches still cancel when closed');
+  await hotspotRace.evaluate(() => { for(const finish of fixture.pending.splice(0))finish(); });
   const offlineHotspotCalls = await hotspotRace.evaluate(() => { fixture.offline=true; controls.render(); return fixture.calls.length; });
   assert.equal(await hotspotRace.getByRole('button', {name:'关联热点',exact:true}).isDisabled(), true);
   await hotspotRace.getByRole('button', {name:'清除关联热点',exact:true}).click();
   assert.equal(await hotspotRace.evaluate(() => fixture.draft.hotspot), '');
   assert.equal(await hotspotRace.evaluate(() => fixture.calls.length), offlineHotspotCalls);
+  await hotspotRace.evaluate(() => { fixture.offline=false; fixture.holdDefault=true; controls.render(); controls.invalidate(); });
+  await openHotspots(); await hotspotRace.waitForFunction(() => fixture.pendingDefaults.length===1);
+  await hotspotRace.evaluate(() => controls.dispose());
+  assert.equal(await hotspotRace.evaluate(() => fixture.calls.at(-1).signal.aborted), true, 'dispose cancels the default background request');
+  await releaseDefaults();
+  assert.equal(await hotspotRace.locator('#hotspot').textContent(), '');
   await hotspotRace.close();
 
   // 选项缓存以账号与作品类型隔离；草稿切换可复用分页，但不能复用另一账号候选。
@@ -595,6 +746,27 @@ try {
   const topicDescriptionInput = topics.locator('#description');
   const topicOption = name => topics.getByRole('option', {name: '# ' + name, exact: true});
   const readTopics = () => topics.evaluate(() => structuredClone(fixture.draft.topics));
+  // 第一次点击添加话题同时聚焦正文；推荐栏和空词候选共用同一个在途请求。
+  await topics.evaluate(() => { fixture.holdRecommendation = true; });
+  await topics.locator('#search-topics').click();
+  await topics.waitForFunction(() => typeof fixture.releaseRecommendation === 'function');
+  assert.equal(await topics.evaluate(() => fixture.calls.filter(call => !call.query).length), 1, 'focus and empty topic dropdown share one request');
+  await topics.evaluate(() => fixture.releaseRecommendation([{id:'first-recommendation',name:'推荐话题'}]));
+  await topicOption('推荐话题').waitFor();
+  await topics.locator('#topic-recommendations button').filter({hasText:'#推荐话题'}).waitFor();
+  await topics.keyboard.press('Escape');
+  await topics.locator('#search-topics').click();
+  await topicOption('推荐话题').waitFor();
+  assert.equal(await topics.evaluate(() => fixture.calls.filter(call => !call.query).length), 1, 'reopening reuses the completed recommendation page');
+  // 即便传输忽略取消，旧账号的共享请求也不能回写新账号的推荐栏或候选。
+  await topics.keyboard.press('Escape');
+  await topics.evaluate(() => { controls.invalidateRecommendations(); delete fixture.releaseRecommendation; });
+  await topics.locator('#search-topics').click();
+  await topics.waitForFunction(() => typeof fixture.releaseRecommendation === 'function');
+  await topics.evaluate(() => { fixture.account = 'B'; controls.render(); fixture.releaseRecommendation([{id:'stale',name:'旧账号推荐'}]); fixture.holdRecommendation = false; });
+  await topics.locator('#search-topics').click();
+  await topics.locator('#association-results .resource-message').filter({hasText:'没有找到匹配结果'}).waitFor();
+  assert.equal(await topics.getByText('旧账号推荐', {exact:false}).count(), 0, 'late shared recommendation does not cross accounts');
   await topicDescriptionInput.fill('日期 #20190701');
   await topicOption('20190701').waitFor();
   assert.deepEqual(await readTopics(), [], 'typing a new hashtag leaves it ordinary unbound text');

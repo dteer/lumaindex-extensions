@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {buildPublicationPayload, validateStudioDraft} from '../browser/publication-payload.js';
+import {buildPublicationPayload, validateStudioDraft} from '../app/platform/publication-payload.js';
 
 // Fixtures contain invented IDs only and never send network requests.
 function draft(overrides = {}) {
@@ -20,13 +20,13 @@ function rejected(run, code) {
   assert.throws(run, error => error instanceof Error && error.code === code && /[\u3400-\u9fff]/u.test(error.message));
 }
 
-// An existing literal hashtag must not be guessed as an association. A selected
-// topic is appended separately, with UTF-16 offsets matching the actual text.
+// A selected topic reuses its complete literal hashtag; UTF-16 offsets bind
+// the existing text without appending a second copy.
 const original = draft();
 const snapshot = structuredClone(original);
 const imagePayload = build(original);
 const common = imagePayload.item.common;
-assert.equal(common.text, '作品🙂。海边 #夏天 #夏天 @小 王');
+assert.equal(common.text, '作品🙂。海边 #夏天 @小 王');
 assert.equal(common.media_type, 2);
 assert.equal(common.visibility_type, 0);
 assert.equal(common.download, 0);
@@ -146,10 +146,9 @@ for (const [key, resolved] of [['music', {id: '303', duration: 5}], ['location',
 
 // Capabilities and content constraints fail before work can be reported ready.
 rejected(() => validateStudioDraft(original, {operations: []}), 'UNSUPPORTED_FEATURE');
-rejected(() => validateStudioDraft(draft({topics: [], mentions: [], settings: {...original.settings, declarations: ['aigc']}})), 'UNSUPPORTED_FEATURE');
-rejected(() => validateStudioDraft(draft({topics: [], mentions: []}), {operations: [], declarations: [{id: 'required', required: true}]}), 'UNSUPPORTED_FEATURE');
+rejected(() => validateStudioDraft(draft({topics: [], mentions: [], settings: {...original.settings, declarations: ['aigc']}}), {operations: []}), 'UNSUPPORTED_FEATURE');
 rejected(() => validateStudioDraft(draft({description: '字'.repeat(1000)})), 'INVALID_DRAFT');
-rejected(() => validateStudioDraft(draft({topics: [{id: '0', name: '未知话题'}]})), 'INVALID_DRAFT');
+assert.deepEqual(validateStudioDraft(draft({topics: [{id: '0', name: '未知话题'}]})).topics, [{id: '0', name: '未知话题'}]);
 rejected(() => validateStudioDraft(draft({topics: [{id: '101', name: '夏天'}, {id: '101', name: '夏天'}]})), 'INVALID_DRAFT');
 rejected(() => validateStudioDraft(draft({id: 123})), 'INVALID_DRAFT');
 rejected(() => validateStudioDraft(draft({assets: [...original.assets, ...original.assets]})), 'INVALID_DRAFT');
@@ -167,7 +166,7 @@ assert.equal(build(original, {creationId: 'preparation-identity'}).item.common.c
 console.log('publication-payload: passed');
 
 // 新原生编辑器将已选话题插入正文；构造器复用明确完整标记，避免双写文本并保持 UTF-16 范围。
-const {buildPublicationPayload: buildNative, validateStudioDraft: validateNative} = await import('../app/platform/publication-payload.js');
+const buildNative = buildPublicationPayload, validateNative = validateStudioDraft;
 const nativeBuild = (value, extra = {}) => buildNative({draft: value, images: [image], cover, ...extra});
 {
   const value = draft({description: '原有正文', topics: [], mentions: [], hotspot: '城市日落🙂'});

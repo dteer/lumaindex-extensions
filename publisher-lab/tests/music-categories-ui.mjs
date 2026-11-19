@@ -40,6 +40,7 @@ try {
     const state = {version: 2, activeDraftId: 'music-draft', drafts: [{id: 'music-draft', name: '音乐分类回归', kind: 'image', assets: [{id: 'music-image', name: '音乐分类测试.jpg', kind: 'image'}], title: '分类回归', description: '', topics: [], mentions: [], activities: [], settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []}}]};
     if (new URL(location.href).searchParams.has('savedMusic')) state.drafts[0].music = {id: '100000', name: '推荐曲目1'};
     const profile = {id: 'music-profile', accountId: '123', name: '音乐分类账号', browserSessionAvailable: true, hasCookies: true, expiresAt: '2099-01-01T00:00:00Z'}, runtime = JSON.parse(localStorage.getItem('music-runtime-fixture') || '{}');
+    if (new URL(location.href).searchParams.has('missingSavedSource')) delete runtime['luma-studio-selected-music-v1'];
     window.__musicUI = {state, calls: [], hostCalls: [], pendingMusicWrites: [], holdMusicWrite: false, failCatalog: new URL(location.href).searchParams.has('catalogFail'), failPage: '', holdPage: '', pending: [], cancelled: [], expired: false, expireOnInfo: new URL(location.href).searchParams.has('infoExpires'), brokenPreview: new URL(location.href).searchParams.has('brokenPreview')};
     const categories = [{category_id: '0', type: 'recommend', category_name: '推荐'}, {category_id: '0', type: 'rank', category_name: '热门榜'}, {category_id: '0', type: 'fav', category_name: '收藏'}, {category_id: '3', type: 'rank', category_name: '飙升榜'}, {category_id: '4', type: 'rank', category_name: '原创榜'}, {category_id: '5', type: 'category', category_name: '卡点'}, {category_id: '6', type: 'category', category_name: '轻音乐'}, {category_id: '7', type: 'category', category_name: '治愈'}];
     window.pluginContext = {nativeUIAvailable: true, browserEnvironment: {userAgent: 'SyntheticWebKit/1.0', languages: ['zh-CN', 'en-US']}, nativeCapabilities: {browserRequestsVersion: 1, persistentWebsiteSessionsVersion: 1, sessionLoginOptionsVersion: 1, networkHeadersVersion: 1, sessionVersion: 1, sessionProfilesVersion: 1, mediaSelectionVersion: 1}, apiBaseURL: origin + '/api/v1', libraryID: 'music-categories-fixture', frontendState: state};
@@ -208,7 +209,7 @@ try {
   assert.equal(await page.evaluate(() => window.__musicUI.calls.length), beforeSelectedPreview);
   assert.equal(await page.locator('#music-preview-message').isHidden(), true);
   await page.locator('#preview-music').click();
-  // 重新打开的真实编辑页只有音乐身份；无需先打开抽屉，点击即核验账号并获取音频。
+  // 重新打开的编辑页通过音乐身份读取同账号音源，无需先打开抽屉或查询详情。
   await page.setViewportSize({width: 1240, height: 980});
   await page.goto(origin + '/?savedMusic=1');
   await page.locator('#music-name').filter({hasText: '推荐曲目1'}).waitFor();
@@ -220,16 +221,23 @@ try {
   assert.equal(await page.locator('#preview-music').textContent(), '暂停');
   assert.equal(await page.locator('#search-dialog').evaluate(dialog => dialog.open), false);
   const restoredInfo = await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/'));
-  assert.equal(restoredInfo.length, 1); assert.equal(restoredInfo[0].params.id, '100000'); assert.equal(restoredInfo[0].params.music_id, undefined);
+  assert.equal(restoredInfo.length, 0, 'saved audio plays without an info request');
   assert.equal(await page.evaluate(() => window.__musicUI.calls.some(item => item.path === '/openapi/aweme/v1/music/search/')), false);
   assert.deepEqual(await page.evaluate(() => window.__musicUI.state.drafts[0].music), {id: '100000', name: '推荐曲目1'});
   await page.locator('#preview-music').click(); assert.equal(await page.locator('#music-player').evaluate(audio => audio.paused), true);
   await page.locator('#preview-music-icon').click();
   await page.waitForFunction(() => !document.querySelector('#music-player').paused);
-  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/').length), 1);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/').length), 0);
   assert.ok(audioRequests.every(headers => !headers.referer));
-  // 详情请求明确返回会话错误，只在选曲旁显示错误，保留身份与草稿。
+  // 详情接口不可用不影响已保存音源；缺少音源必须查询时，账号错误仍直接提示并保留草稿。
   await page.goto(origin + '/?savedMusic=1&infoExpires=1');
+  await page.locator('#music-name').filter({hasText: '推荐曲目1'}).waitFor();
+  await page.waitForFunction(() => document.querySelector('#account-select')?.value === 'music-profile');
+  await page.locator('#preview-music').click();
+  await page.waitForFunction(() => !document.querySelector('#music-player').paused && document.querySelector('#music-player').readyState >= 2);
+  assert.equal(await page.evaluate(() => window.__musicUI.calls.filter(item => item.path === '/web/api/media/music/info/').length), 0);
+  assert.equal(await page.locator('#music-preview-message').isHidden(), true);
+  await page.goto(origin + '/?savedMusic=1&infoExpires=1&missingSavedSource=1');
   await page.locator('#music-name').filter({hasText: '推荐曲目1'}).waitFor();
   await page.waitForFunction(() => document.querySelector('#account-select')?.value === 'music-profile');
   await page.locator('#preview-music').click();

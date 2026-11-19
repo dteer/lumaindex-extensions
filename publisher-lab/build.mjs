@@ -11,10 +11,7 @@ const markerName = '.publisher-lab-artifacts.json';
 const allowedExtensions = new Set(['.js', '.json', '.html', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff', '.woff2']);
 const blockedDirectories = new Set(['tests', 'docs', 'node_modules', 'codex-service', 'captures', 'logs']);
 // oldEntries 只用于阻止旧自动接管与原生草稿写入进入交付；源码可暂留供只读比对。
-const oldEntries = {
-  app: ['app.js', 'handoff.html', 'handoff.js', 'relay.html', 'browser-bridge.js'],
-  browser: ['handoff-content.js', 'background-bridge.js', 'staging-content.js', 'staging.js', 'staging.html', 'staging.css', 'staging-rules.json', 'draft-page.js'],
-};
+const oldEntries = ['app.js', 'handoff.html', 'handoff.js', 'relay.html', 'browser-bridge.js'];
 
 // references 提取本项目使用的静态模块、页面和样式资源引用；动态 API 地址不作为文件复制。
 function references(source, extension) {
@@ -66,21 +63,11 @@ export async function collectRuntimeFiles(directory, entries, blocked = []) {
   return [...found].sort();
 }
 
-// runtimePlan 默认可分析浏览器参考依赖；AppOnly 构建完全不读取浏览器入口。
-export async function runtimePlan(projectRoot = root, {includeBrowser = true} = {}) {
+// runtimePlan 只分析实际交付的 App 入口；历史浏览器代码不参与构建。
+export async function runtimePlan(projectRoot = root) {
   const app = JSON.parse(await readFile(join(projectRoot, 'app/manifest.json'), 'utf8'));
   if (app.id !== 'com.lumaindex.douyin.studio') throw Error('工作台身份校验失败，已停止打包。');
-  const plan = {app, appFiles: await collectRuntimeFiles(join(projectRoot, 'app'), ['manifest.json', app.entry], oldEntries.app), browser: null, browserFiles: []};
-  if (!includeBrowser) return plan;
-  const browser = JSON.parse(await readFile(join(projectRoot, 'browser/manifest.json'), 'utf8'));
-  if (!browser.name.includes('实验版')) throw Error('浏览器参考代码身份校验失败。');
-  if (browser.declarative_net_request || browser.permissions?.some(value => value.startsWith('declarativeNetRequest')) || browser.content_scripts?.some(value => value.matches?.some(pattern => !/^http:\/\/(127\.0\.0\.1|localhost)\//.test(pattern)))) throw Error('实验参考模块不能注册原生页面接管或旧草稿规则。');
-  const browserEntries = ['manifest.json', browser.background?.service_worker, browser.action?.default_popup, browser.options_ui?.page];
-  for (const script of browser.content_scripts || []) browserEntries.push(...(script.js || []), ...(script.css || []));
-  for (const icons of [browser.icons, browser.action?.default_icon]) if (icons) browserEntries.push(...(typeof icons === 'string' ? [icons] : Object.values(icons)));
-  plan.browser = browser;
-  plan.browserFiles = await collectRuntimeFiles(join(projectRoot, 'browser'), browserEntries.filter(Boolean), oldEntries.browser);
-  return plan;
+  return {app, appFiles: await collectRuntimeFiles(join(projectRoot, 'app'), ['manifest.json', app.entry], oldEntries)};
 }
 
 // copyFiles 只复制已经验证的依赖列表，不递归扫描源码目录。
@@ -107,7 +94,7 @@ export async function writeAppArtifacts({projectRoot = root, destination, plan})
 // build 在独立临时目录完成所有打包，成功后才替换带本项目标识的旧工作台产物。
 async function build() {
   if (process.argv.length > 2) throw Error('此构建固定输出至 ~/Desktop/app/抖音发布工作台，不接受覆盖其他目录。');
-  const plan = await runtimePlan(root, {includeBrowser: false});
+  const plan = await runtimePlan(root);
   await mkdir(dirname(output), {recursive: true});
   let existing = false;
   try {

@@ -41,7 +41,7 @@ function harness(shared = {}) {
       case '/web/api/mix/list/': data = state.collectionPage?.(url) ?? {status_code: 0, has_more: 0, cursor: '0', mix_list: [{mix_id: '501', mix_name: '合成合集', type: 0, status: {status: 0}, statis: {updated_to_episode: 2}, cover_url: {url_list: ['https://media.example.test/fixture-collection-cover.jpg']}}]}; break;
       case '/web/api/media/hashtag/rec/': data = {status_code: 0, challenge_list: [{cid: '222', cha_name: '真实候选', view_count: 123}]}; break;
       case '/aweme/v1/hotspot/search/': data = {status_code: 0, sentences: [{word: '城市日落', hot_value: 123}]}; break;
-      case '/aweme/v1/hotspot/recommend/': data = {status_code: 0, rec_sentences: [{word: '推荐热点'}], all_sentences: [{word: '全部热点'}]}; break;
+      case '/aweme/v1/hotspot/recommend/': data = state.hotspotPage?.(url) ?? {status_code: 0, rec_sentences: [{word: '推荐热点'}], all_sentences: [{word: '全部热点'}]}; break;
       case '/web/api/media/activity/get/': data = {status_code: 0, activity_list: state.activities ?? [{activity_id: '701', activity_name: '官方摄影活动', activity_status: 1, challenge: ['摄影日常'], challenge_ids: ['801'], hot_score: 419}]}; break;
       case '/web/api/media/activity/detail/': data = state.activityDetail ?? {status_code: 0, activity_info: {activity_id: '701', activity_name: '官方摄影活动'}, activity_description: '平台活动说明', topics: ['摄影日常'], topics_ids: ['801']}; break;
       case '/web/api/media/upload/auth/v5/': data = {status_code: 0, auth: JSON.stringify({AccessKeyID: 'synthetic-id', SecretAccessKey: 'temporary-secret', SessionToken: 'temporary-token', ExpiredTime: '2060-01-01T00:00:00Z'})}; break;
@@ -61,7 +61,7 @@ function harness(shared = {}) {
   const upload = {
     async importImages(input, deps) {
       state.uploads++;
-      state.onUpload?.();
+      state.onUpload?.(input);
       const auth = await deps.getAuth(); assert.equal(auth.SecretAccessKey, 'temporary-secret');
       const files = input.job.assets.map((asset, index) => ({uri: `tos/native-${index}.jpg`, uriStatus: 2000, imageWidth: 1000, imageHeight: 800}));
       await deps.checkpoint(files.map((file, index) => ({account: state.account, assetID: input.job.assets[index].id, revision: 'v1', kind: 'image', uploadFile: file})));
@@ -85,8 +85,13 @@ function harness(shared = {}) {
   h.state.onRequest = url => requests.push(new URL(url));
   assert.ok(h.engine.capabilities().operations.includes('hotspots.search'));
   const empty = await h.run('hotspots.search', {query: '', kind: 'image', draftId: 'draft-native'});
-  assert.deepEqual(empty, {items: [], nextCursor: null, message: '输入热点词搜索'});
-  assert.equal(h.state.paths.length, 0, '图文上传前不虚构推荐或额外联网检查账号');
+  assert.deepEqual(empty, {items: [{name: '推荐热点'}, {name: '全部热点'}], nextCursor: null});
+  assert.deepEqual(h.state.paths, ['/aweme/v1/hotspot/recommend/'], '图文上传前也读取平台热点，不额外查询账号');
+  assert.equal(requests.at(-1).searchParams.get('zip_uri'), '');
+  h.state.hotspotPage = () => ({status_code: 0, rec_sentences: [], all_sentences: [{word: '刚更新的热点'}]});
+  assert.deepEqual((await h.run('hotspots.search', {query: '', kind: 'image', draftId: 'draft-native'})).items, [{name: '刚更新的热点'}]);
+  assert.equal(h.state.paths.length, 2, '重复打开空关键词列表必须读当前数据，不复用旧热点');
+  h.state.hotspotPage = undefined;
   for (const kind of ['image', 'video']) {
     const result = await h.run('hotspots.search', {query: '日落', kind});
     assert.deepEqual(result.items, [{name: '城市日落', heat: 123}]);
@@ -109,10 +114,12 @@ function harness(shared = {}) {
   assert.deepEqual(recommended.items, [{name: '推荐热点'}, {name: '全部热点'}]);
   assert.equal(requests.at(-1).searchParams.get('zip_uri'), 'tos/native-0.jpg');
   const reads = h.state.paths.length;
-  assert.deepEqual((await h.run('hotspots.search', {kind: 'image', draftId: 'another-draft'})).items, []);
+  assert.equal((await h.run('hotspots.search', {kind: 'image', draftId: 'another-draft'})).items.length, 2);
+  assert.equal(requests.at(-1).searchParams.get('zip_uri'), '', '不同草稿只读取默认热点，不复用上传素材');
   h.state.hostAccount = h.state.account = '456';
-  assert.deepEqual((await h.run('hotspots.search', {kind: 'image', draftId: value.id})).items, []);
-  assert.equal(h.state.paths.length, reads, '不同草稿/账号不能复用旧上传推荐');
+  assert.equal((await h.run('hotspots.search', {kind: 'image', draftId: value.id})).items.length, 2);
+  assert.equal(requests.at(-1).searchParams.get('zip_uri'), '', '不同账号只读取默认热点，不复用旧账号上传素材');
+  assert.equal(h.state.paths.length, reads + 2);
   for (const params of [{query: {}}, {query: '词'.repeat(501)}, {kind: 'other'}, {draftId: 123}]) await assert.rejects(h.run('hotspots.search', params), /热点查询参数/);
 }
 for (const reason of ['cancel', 'account-change']) {
@@ -135,11 +142,11 @@ console.log('native hotspots engine: fixed string payload, no extra account/hots
   const h = harness();
   assert.equal((await h.run('studio.session')).account.id, '123');
   await assert.rejects(h.run('arbitrary.fetch'), /尚未接入/);
-  await assert.rejects(h.run('publication.prepare', {draft: draft({topics: [{id: '999', name: '真实候选'}]})}), error => error.code === 'CHOICE_UNAVAILABLE');
+  await assert.rejects(h.run('publication.prepare', {draft: draft({topics: [{id: 'invalid-id', name: '真实候选'}]})}), /未经确认的身份/);
   assert.equal(h.state.uploads, 0);
   await h.run('topics.search', {query: '真实'});
   const prepared = await h.run('publication.prepare', {draft: draft({topics: [{id: '222', name: '真实候选'}]})});
-  assert.equal(prepared.canPublish, true); assert.equal(h.state.queries, 4);
+  assert.equal(prepared.canPublish, true); assert.equal(h.state.queries, 1, 'only explicit topic browsing searches the platform');
   assert.equal(JSON.stringify(h.values).includes('temporary-secret'), false);
   assert.equal(JSON.stringify(h.values).includes('temporary-token'), false);
   const request = {preparationId: prepared.preparationId, requestId: 'request-one', expectedAccountId: '123', confirmed: true};
@@ -171,7 +178,7 @@ console.log('native hotspots engine: fixed string payload, no extra account/hots
   assert.equal((await h.run('publication.publish', request)).status, 'unknown');
   assert.equal(h.state.posts.length, 1);
 }
-console.log('native engine: fixed protocol, candidate provenance, upload checkpoints, persistent one-shot submit and unknown restart passed');
+console.log('native engine: fixed protocol, validated identity format, upload checkpoints, persistent one-shot submit and unknown restart passed');
 
 // 明确选择的名称话题按官网0标记提交；准备无需为其远程搜索或替换成猜测的既存身份。
 {
@@ -189,11 +196,11 @@ console.log('native engine: fixed protocol, candidate provenance, upload checkpo
   assert.deepEqual(value, before);
   const mixed = await h.run('publication.prepare', {draft: {...value, topics: [...value.topics, {id: '222', name: '真实候选'}]}});
   assert.equal(preparedRecord(h, mixed).payload.item.common.challenges, '["222"]');
-  assert.equal(h.state.paths.filter(path => path.includes('challengesug')).length, 2, 'positive topic identities keep the existing pre/post-upload verification');
+  assert.equal(h.state.paths.filter(path => path.includes('challengesug')).length, 0, 'saved positive topic IDs are not searched again during preparation');
 }
-console.log('native name-topic preparation: zero-search explicit names, numeric-zero payload, retained positive-ID verification and no publication passed');
+console.log('native name-topic preparation: zero-search explicit names and saved IDs, numeric-zero payload and no publication passed');
 
-// 声明规则在媒体准备前后重查；不接受自造或已经失效的选项。
+// 声明规则在媒体准备时读取一次；不接受自造或准备前已经失效的选项。
 {
   const h = harness();
   h.state.declarations = {options: [{choose_value: 'aigc', text: '内容由AI生成'}], block_type: 1};
@@ -207,6 +214,8 @@ console.log('native name-topic preparation: zero-search explicit names, numeric-
   const record = Object.values(h.values['luma-studio-publications-v1'].preparations).find(item => item.preparationId === prepared.preparationId);
   assert.deepEqual(record.payload.item.declare, {user_declare_info: '{"choose_value":"aigc"}'});
   h.state.onUpload = () => { h.state.declarations = {options: [], block_type: 0}; };
+  const next = await h.run('publication.prepare', {draft: value});
+  assert.deepEqual(preparedRecord(h, next).payload.item.declare, {user_declare_info: '{"choose_value":"aigc"}'}, 'the confirmed declaration is reused within this preparation');
   await assert.rejects(h.run('publication.prepare', {draft: value}), /声明已变化/);
   assert.ok(Object.keys(h.values).some(key => key.startsWith('studio-uploads:')));
 }
@@ -223,7 +232,7 @@ console.log('native name-topic preparation: zero-search explicit names, numeric-
   const key = Object.keys(h.values).find(value => value.startsWith('studio-uploads:'));
   assert.deepEqual(h.values[key].recommendationFrames, []);
   h.state.failAfterCheckpoint = false;
-  assert.equal((await h.run('publication.prepare', {draft: chosen})).canPublish, true, 'retry verifies selected recommendation by name even when the old image snapshot was invalidated');
+  assert.equal((await h.run('publication.prepare', {draft: chosen})).canPublish, true, 'retry retains the selected topic ID even when its recommendation image snapshot was invalidated');
   h.state.account = '456';
   assert.deepEqual((await h.run('topics.search', {query: '', kind: 'image', draftId: 'draft-native'})).items, []);
 }
@@ -309,7 +318,7 @@ console.log('native engine options: declaration freshness, required validation, 
   h.state.browserReady = true;
   const queriesBeforeRecovery = h.state.queries;
   assert.equal((await h.run('publication.prepare', {draft: draft({topics: [{id: '222', name: '真实候选'}]})})).canPublish, true);
-  assert.equal(h.state.queries - queriesBeforeRecovery, 2, 'cleared provenance is recovered using fresh pre-upload and post-upload queries');
+  assert.equal(h.state.queries - queriesBeforeRecovery, 0, 'recovery preserves saved topic identities without another search');
   await h.run('topics.search', {query: '真实'});
   h.state.profile = 'profile-456'; h.state.hostAccount = h.state.account = '456';
   const changedBefore = h.state.paths.length;
@@ -323,7 +332,7 @@ console.log('native engine options: declaration freshness, required validation, 
   h.state.profile = 'profile-123';
   const queriesBeforeRecovery = h.state.queries;
   assert.equal((await h.run('publication.prepare', {draft: draft({topics: [{id: '222', name: '真实候选'}]})})).canPublish, true);
-  assert.equal(h.state.queries - queriesBeforeRecovery, 2, 'cleared provenance is recovered using fresh pre-upload and post-upload queries');
+  assert.equal(h.state.queries - queriesBeforeRecovery, 0, 'recovery preserves saved topic identities without another search');
 }
 {
   const h = harness({sessionProfiles: true}); await h.run('studio.session');
@@ -338,13 +347,13 @@ console.log('native engine options: declaration freshness, required validation, 
   h.state.onRequest = null;
   const queriesBeforeRecovery = h.state.queries;
   assert.equal((await h.run('publication.prepare', {draft: draft({topics: [{id: '222', name: '真实候选'}]})})).canPublish, true);
-  assert.equal(h.state.queries - queriesBeforeRecovery, 2, 'cleared provenance is recovered using fresh pre-upload and post-upload queries');
+  assert.equal(h.state.queries - queriesBeforeRecovery, 0, 'recovery preserves saved topic identities without another search');
 }
 {
   const h = harness({sessionProfiles: true}); await h.run('studio.session');
   await h.run('topics.search', {query: '真实'});
   const prepared = await h.run('publication.prepare', {draft: draft({topics: [{id: '222', name: '真实候选'}]})});
-  assert.equal(h.state.queries, 3, 'prepare bypasses page cache for both pre-upload and post-upload candidate checks');
+  assert.equal(h.state.queries, 1, 'preparation does not confuse topic search cache with permission to use the saved ID');
   h.state.account = '456';
   const rejected = await h.engine.dispatch('publication.publish', {preparationId: prepared.preparationId, requestId: 'cached-account-mismatch', expectedAccountId: '123', confirmed: true}, {origin, profileId: h.state.profile, expectedAccountId: '123'});
   assert.equal(rejected.status, 'failed'); assert.match(rejected.message, /账号已变化/);
@@ -459,8 +468,8 @@ console.log('native favorite music: exact long cursor through full engine, termi
   assert.equal(h.state.paths.includes('/web/api/media/user/info/'), false, 'activity browsing and refresh do not request extra account verification');
   const prepared = await h.run('publication.prepare', {draft: value});
   assert.equal(prepared.canPublish, true);
-  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 4, 'both preparation boundaries reread current activity eligibility');
-  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length, 3, 'detail browsing cannot replace either exact preparation check');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/get/').length, 3, 'preparation reads current activity eligibility once');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length, 2, 'detail browsing cannot replace the exact preparation check');
   assert.equal(h.state.queries, 0, 'an activity hashtag uses its verified detail rather than a separate generic topic search');
   const record = Object.values(h.values).flatMap(value => Object.values(value?.preparations || {})).find(value => value.preparationId === prepared.preparationId);
   assert.deepEqual(record.draft.activities, [activity]); assert.equal(record.payload.item.common.activity, '["801"]');
@@ -488,9 +497,10 @@ for (const change of ['game', 'ended', 'topic']) {
   h.state.onUpload = () => { h.state.activities = [{activity_id: '701', activity_name: '官方摄影活动', activity_status: change === 'ended' ? 2 : 1,
     challenge: ['摄影日常'], challenge_ids: ['801'], game_id: change === 'game' ? '901' : ''}];
     if (change === 'topic') h.state.activityDetail = {status_code: 0, activity_info: {activity_id: '701', activity_name: '官方摄影活动'}, topics: ['摄影日常'], topics_ids: ['802']}; };
-  await assert.rejects(h.run('publication.prepare', {draft: draft({activities: [activity]})}), /游戏推广|可参加状态|已变化或不可用/);
+  const prepared = await h.run('publication.prepare', {draft: draft({activities: [activity]})});
+  assert.deepEqual(preparedRecord(h, prepared).draft.activities, [activity], 'reuse the activity identity confirmed before uploading');
   assert.equal(h.state.uploads, 1); assert.equal(h.state.posts.length, 0);
-  assert.equal(Object.values(h.values).flatMap(value => Object.values(value?.preparations || {})).length, 0, 'changed eligibility after upload cannot yield a publishable snapshot');
+  await assert.rejects(h.run('publication.prepare', {draft: draft({activities: [activity]})}), /游戏推广|可参加状态|已变化或不可用/, 'a new preparation reads current platform choices');
 }
 // 平台目录可能在服务端把 ID 舍入，详情字符串才是唯一准确来源；列表变化不得偷偷替换已选身份。
 {
@@ -533,9 +543,9 @@ for (const reason of ['account', 'cancel']) {
   assert.equal(h.state.uploads, 0, 'a cancelled or changed-account response cannot start an upload');
   const detailBeforeRecovery = h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length;
   assert.equal((await h.run('publication.prepare', {draft: draft({activities: [{id: '701', name: '官方摄影活动', topic: {id: '801', name: '摄影日常'}}]})})).canPublish, true);
-  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length - detailBeforeRecovery, 2, 'retry queries exact current details before and after upload instead of adopting the late response');
+  assert.equal(h.state.paths.filter(path => path === '/web/api/media/activity/detail/').length - detailBeforeRecovery, 1, 'retry queries exact current details instead of adopting the late response');
 }
-console.log('native activities engine: exact detail identities, restored drafts, current-account eligibility and fresh pre/post-upload checks passed');
+console.log('native activities engine: exact detail identities, restored drafts, current-account eligibility and one check per preparation passed');
 
 // preparedRecord 读取离线准备快照，以验证提交字段来自平台响应而不是草稿附加值。
 function preparedRecord(h, prepared) {
@@ -547,10 +557,11 @@ function collectionFixture(id = '501', name = '合成合集', count = 2) {
   return {mix_id: id, mix_name: name, type: 0, status: {status: 0}, statis: {updated_to_episode: count}};
 }
 
-// 重建引擎只恢复本机存储，所有选择仍显示，但必须重新从当前账号取得可信发布字段。
+// 重建引擎保留公共身份；地点附加字段、合集集数和账号相关发布状态仍从当前账号取得。
 {
   const h = harness();
-  await h.run('music.search'); await h.run('topics.search', {query: '真实'});
+  await h.run('music.search'); await h.run('music.select', {id: '333', keepIds: ['333']});
+  await h.run('topics.search', {query: '真实'});
   const value = draft({topics: [{id: '222', name: '真实候选'}], mentions: [{id: '601', name: '合成好友'}],
     music: {id: '333', name: '合成音乐', duration: 9999},
     location: {id: '401', name: '合成公园', cityCode: '440300', cityName: '深圳市', extra: '{"untrusted":true}'},
@@ -559,34 +570,35 @@ function collectionFixture(id = '501', name = '合成合集', count = 2) {
   restarted.state.onRequest = url => { if (url.pathname.includes('/search/poi/')) locationRequests.push(Object.fromEntries(url.searchParams)); };
   const prepared = await restarted.run('publication.prepare', {draft: value}), record = preparedRecord(restarted, prepared);
   assert.equal(prepared.canPublish, true); assert.deepEqual(value, snapshot, 'revalidation leaves the saved draft untouched');
-  assert.equal(record.payload.item.common.music_end_time, 100000, 'music duration is reacquired, never copied from the draft');
+  assert.equal(record.payload.item.common.music_end_time, 100000, 'music duration comes from the real saved selection, never the draft');
   assert.deepEqual(record.payload.item.anchor, {poi_id: '401', poi_name: '合成公园', anchor_content: '{"verified":true,"is_commerce_intention":false}'});
   assert.deepEqual(record.payload.item.mix, {mix_id: '501', mix_order: 2});
-  assert.equal(locationRequests.length, 2);
+  assert.equal(locationRequests.length, 1);
   for (const params of locationRequests) {
     assert.equal(params.selected_city_code, '440300'); assert.equal(params.selected_city_name, '深圳市'); assert.equal(params.keywords, '合成公园');
   }
-  assert.equal(restarted.state.paths.filter(path => path.endsWith('/music/info/')).length, 2, 'identity is checked at both preparation boundaries');
+  assert.equal(restarted.state.paths.filter(path => path.endsWith('/music/info/')).length, 1, 'identity is checked once within a preparation');
   assert.equal(restarted.state.paths.filter(path => path.includes('/music/search/')).length, 0, 'restoration never searches a name');
-  assert.equal(restarted.state.queries, 2, 'topics are freshly verified at both preparation boundaries');
-  assert.equal(restarted.state.paths.filter(path => path === '/web/api/v2/discover/search/').length, 2);
+  assert.equal(restarted.state.queries, 0, 'saved topic IDs survive engine recreation without a name search');
+  assert.equal(restarted.state.paths.filter(path => path === '/web/api/v2/discover/search/').length, 0, 'saved user IDs do not have to reappear in a new search');
   assert.equal(restarted.state.posts.length, 0, 'restoring a selection does not publish');
 }
 
-// 三十分钟到期和时钟回拨都重新查询音乐；近期候选不能通过延后读取无限续期。
+// 已展示歌曲的真实时长不随缓存时间或时钟回拨失效；准备只核验一次详情。
 for (const delta of [30 * 60 * 1000, -1]) {
   const h = harness(); await h.run('music.search');
   h.state.clock += delta;
   h.state.musicPage = () => ({status_code: 0, songs: [{music_id: '333', music_name: '合成音乐', duration: 23}], has_more: false});
   const prepared = await h.run('publication.prepare', {draft: draft({music: {id: '333', name: '合成音乐'}})});
-  assert.equal(preparedRecord(h, prepared).payload.item.common.music_end_time, 23000);
-  assert.equal(h.state.paths.filter(path => path.endsWith('/music/info/')).length, 2);
+  assert.equal(preparedRecord(h, prepared).payload.item.common.music_end_time, 100000);
+  assert.equal(h.state.paths.filter(path => path.endsWith('/music/info/')).length, 1);
   assert.equal(h.state.paths.filter(path => path.includes('/music/search/')).length, 0);
 }
 
 // 音乐名字只展示；详情同 ID 改名仍是原歌曲，不发送名称搜索或改写保存的草稿。
 {
   const h = harness(), name = '长'.repeat(110), value = draft({music: {id: '333', name}}), snapshot = structuredClone(value);
+  await h.run('music.search');
   h.state.musicInfoPage = () => ({status_code: 0, music_id: '333', music_name: '平台已改名', music_author: '作者'});
   assert.equal((await h.run('publication.prepare', {draft: value})).canPublish, true);
   assert.deepEqual(value, snapshot);
@@ -613,8 +625,12 @@ for (const delta of [30 * 60 * 1000, -1]) {
     return cursor === '0' ? {status_code: 0, songs: [{music_id: '334', music_name: '合成音乐', duration: 5}], has_more: true, cursor: '20'}
       : {status_code: 0, songs: [{music_id: '333', music_name: '合成音乐', duration: 30}], has_more: false};
   };
+  const first = await h.run('music.search', {cursor: '0'});
+  await h.run('music.search', {cursor: first.nextCursor});
+  await h.run('music.select', {id: '333', keepIds: ['333']});
   const prepared = await h.run('publication.prepare', {draft: draft({music: {id: '333', name: '合成音乐'}})});
-  assert.deepEqual(cursors, ['0', '20']); assert.equal(preparedRecord(h, prepared).payload.item.common.music_end_time, 30000);
+  assert.deepEqual(cursors, ['0', '20'], 'preparation does not rescan the selected song’s list');
+  assert.equal(preparedRecord(h, prepared).payload.item.common.music_end_time, 30000);
 }
 
 // 无匹配时最多查五页；循环游标不能无限请求，失效选择不会开始上传。
@@ -665,9 +681,11 @@ for (const reason of ['account', 'cancel']) {
   const value = draft({location: {id: '401', name: '合成公园', cityCode: '440300', cityName: '深圳市'}}), original = structuredClone(value);
   const prepared = await h.run('publication.prepare', {draft: value});
   assert.deepEqual(value, original);
-  assert.equal(preparedRecord(h, prepared).payload.item.anchor.poi_name, '公园已改名');
+  assert.equal(preparedRecord(h, prepared).payload.item.anchor.poi_name, '合成公园', 'reuse the name confirmed before upload');
   assert.equal(preparedRecord(h, prepared).payload.item.anchor.poi_id, '401');
   assert.equal(h.state.uploads, 1); assert.equal(h.state.posts.length, 0);
+  const next = await h.run('publication.prepare', {draft: value});
+  assert.equal(preparedRecord(h, next).payload.item.anchor.poi_name, '公园已改名', 'a new preparation reads the current name');
 }
 console.log('native draft restoration: restart, expired music, exact identity, city metadata, bounded pagination, failed lookup, cancellation and current-account revalidation passed');
 
@@ -805,10 +823,11 @@ for (const phase of ['read', 'crop', 'upload', 'final']) {
   if (phase === 'crop') h.calls.afterCrop = change;
   if (phase === 'upload') h.calls.afterUpload = change;
   if (phase === 'final') {
-    let declarations = 0;
-    h.state.onRequest = url => { if (url.pathname === '/aweme/v3/user_declaration/suggestion/' && ++declarations === 2) change('external-cover'); };
+    let collections = 0;
+    h.state.onRequest = url => { if (url.pathname === '/web/api/mix/list/' && ++collections === 2) change('external-cover'); };
   }
-  await assert.rejects(h.run('publication.prepare', {draft: independentCoverDraft(crop)}, progress), /封面.*变化/);
+  const value = {...independentCoverDraft(crop), ...(phase === 'final' ? {collection: {id: '501', name: '合成合集'}} : {})};
+  await assert.rejects(h.run('publication.prepare', {draft: value}, progress), /封面.*变化/);
   assert.equal(h.state.posts.length, 0);
   assert.equal(Object.values(h.values['luma-studio-publications-v1']?.preparations || {}).length, 0, 'cover changes cannot leave a publishable preparation');
   if (['read', 'crop'].includes(phase)) assert.equal(h.calls.upload.some(id => id.startsWith('external-cover')), false, 'changed source is rejected before uploading its bytes');
@@ -867,6 +886,21 @@ for (const wrongKind of ['video', 'audio', undefined]) {
 console.log('native independent covers: raw/cropped upload, body-order preservation, account/cancel isolation, version checks and real mediaType mapping passed');
 
 const musicRecordKey = 'luma-studio-selected-music-v1';
+// 页面中仍可见的歌曲在翻页超过 200 首、停留超过 30 分钟或时钟回拨后仍可选择，无额外网络。
+for (const delta of [31 * 60 * 1000, -1]) {
+  const h = harness({sessionProfiles: true});
+  h.state.musicPage = url => ({status_code: 0, songs: Array.from({length: 20}, (_, index) => {
+    const id = String(Number(url.searchParams.get('cursor')) + index + 1);
+    return {music_id: id, music_name: `曲目${id}`, duration: 23, play_url: `https://media.example.test/${id}.mp3`};
+  }), has_more: true, cursor: String(Number(url.searchParams.get('cursor')) + 20)});
+  for (let page = 0; page < 11; page++) await h.run('music.search', {cursor: String(page * 20)});
+  h.state.clock += delta;
+  const before = h.state.paths.length;
+  assert.match((await h.run('music.select', {id: '1', keepIds: ['1']})).previewURL, /\/1.mp3$/);
+  assert.equal(h.state.paths.length, before);
+  h.engine.invalidate();
+  await assert.rejects(h.run('music.select', {id: '1', keepIds: ['1']}), /没有这首音乐的查询记录/, 'explicit account lifecycle invalidation still clears candidates');
+}
 // 点击使用只持久化当前档案已查询的候选；一分钟身份缓存到期不会让本机保存等待平台网络。
 {
   const h = harness({sessionProfiles: true});
@@ -884,16 +918,14 @@ const musicRecordKey = 'luma-studio-selected-music-v1';
   assert.ok(h.state.paths.slice(prepareBefore).includes('/web/api/media/user/info/'), 'publication preparation still verifies the live remote identity');
 }
 
-// 账号、档案、网页环境或候选期限变化时先拒绝；空宿主状态不能偷偷退回联网查询。
-for (const reason of ['profile', 'account', 'expired', 'clock', 'missing-status', 'different-scope']) {
+// 账号与档案变化时拒绝跨账号选曲；空宿主状态不能偷偷退回联网查询。
+for (const reason of ['profile', 'account', 'missing-status', 'different-scope']) {
   const h = harness({sessionProfiles: true}); await h.run('music.search'); h.state.clock += 61000;
   let expectedCode, expectedMessage;
   if (reason === 'profile') { h.state.profile = 'profile-other'; expectedCode = 'ACCOUNT_CHANGED'; }
   if (reason === 'account') { h.state.hostAccount = '456'; expectedCode = 'ACCOUNT_CHANGED'; }
-  if (reason === 'expired') { h.state.clock += 30 * 60 * 1000; expectedMessage = /查询记录已失效/; }
-  if (reason === 'clock') { h.state.clock -= 62000; expectedMessage = /查询记录已失效/; }
   if (reason === 'missing-status') { h.state.statusOverride = null; expectedCode = 'SESSION_CHANGED'; }
-  if (reason === 'different-scope') { h.state.profile = 'profile-other'; expectedMessage = /查询记录已失效/; }
+  if (reason === 'different-scope') { h.state.profile = 'profile-other'; expectedMessage = /没有这首音乐的查询记录/; }
   const before = {paths: h.state.paths.length, writes: h.state.storageWrites};
   await assert.rejects(h.engine.dispatch('music.select', {id: '333', keepIds: ['333']},
     {origin, profileId: reason === 'different-scope' ? 'profile-other' : 'profile-123', expectedAccountId: '123'}),
@@ -903,19 +935,18 @@ for (const reason of ['profile', 'account', 'expired', 'clock', 'missing-status'
 }
 
 // 写队列内读取之后再次核对；等待期间换号、取消及持久化失败均不得返回选曲成功。
-for (const reason of ['profile', 'account', 'cancel', 'expired', 'write']) {
+for (const reason of ['profile', 'account', 'cancel', 'write']) {
   const h = harness({sessionProfiles: true}); await h.run('music.search'); h.state.clock += 61000;
   const controller = new AbortController(), before = h.state.paths.length;
   h.state.onStorageGet = () => {
     if (reason === 'profile') h.state.profile = 'profile-other';
     if (reason === 'account') h.state.hostAccount = '456';
     if (reason === 'cancel') controller.abort();
-    if (reason === 'expired') h.state.clock += 30 * 60 * 1000;
   };
   if (reason === 'write') h.state.onStorageSet = () => { throw Error('合成本机写入失败'); };
   await assert.rejects(h.engine.dispatch('music.select', {id: '333', keepIds: ['333']},
     {origin, profileId: 'profile-123', expectedAccountId: '123', signal: controller.signal}),
-    error => reason === 'cancel' ? error.name === 'AbortError' : reason === 'write' ? /本机写入失败/.test(error.message) : reason === 'expired' ? /查询记录已失效/.test(error.message) : ['ACCOUNT_CHANGED', 'SESSION_CHANGED'].includes(error.code));
+    error => reason === 'cancel' ? error.name === 'AbortError' : reason === 'write' ? /本机写入失败/.test(error.message) : ['ACCOUNT_CHANGED', 'SESSION_CHANGED'].includes(error.code));
   assert.equal(h.state.paths.length, before); assert.equal(h.values[musicRecordKey], undefined);
   assert.equal(h.state.storageWrites, reason === 'write' ? 1 : 0);
 }
@@ -935,7 +966,33 @@ for (const reason of ['profile', 'account', 'cancel', 'expired', 'write']) {
 }
 console.log('native music selection: local-only persistence after identity TTL, scoped candidate checks, queued cancellation and write failures passed');
 
-// 真实选曲记录单独保存；重建引擎后 info 核 ID，再恢复同账号音源，浏览翻页不写持久记录。
+// 准备旧稿缺少音乐时长时明确反馈资料缺失，不遍历推荐或收藏碰运气找相同 ID。
+{
+  const h = harness({sessionProfiles: true});
+  h.state.musicCategories = [{category_id: '1', type: 'recommend', category_name: '推荐'}, {category_id: '2', type: 'fav', category_name: '收藏'}];
+  h.state.musicPage = () => { assert.fail('metadata recovery must not scan recommendations or favorites'); };
+  await assert.rejects(h.run('publication.prepare', {draft: draft({music: {id: '333', name: '原声'}})}), error => error.code === 'MUSIC_METADATA_MISSING');
+  assert.equal(h.state.paths.filter(path => path.endsWith('/music/info/')).length, 1);
+  assert.equal(h.state.paths.filter(path => path.endsWith('/music/category')).length, 0);
+  assert.equal(h.state.musicRequests.length, 0);
+  assert.equal(h.state.uploads, 0);
+}
+
+// 从本机记录恢复试听期间换号或取消，旧音源仍不得返回给当前页面。
+for (const reason of ['profile', 'cancel']) {
+  const h = harness({sessionProfiles: true}); await h.run('music.search'); await h.run('music.select', {id: '333', keepIds: ['333']});
+  const controller = new AbortController(), before = h.state.paths.length;
+  h.state.onStorageGet = key => {
+    if (key !== musicRecordKey) return;
+    if (reason === 'profile') h.state.profile = 'other-profile';
+    else controller.abort();
+  };
+  await assert.rejects(h.run('music.resolve', {id: '333'}, {signal: controller.signal}),
+    error => reason === 'profile' ? error.code === 'ACCOUNT_CHANGED' : error.name === 'AbortError');
+  assert.equal(h.state.paths.length, before);
+}
+
+// 真实选曲记录单独保存；重建引擎后直接试听同账号音源，详情失败不阻断已有地址。
 {
   const h = harness({sessionProfiles: true});
   await h.run('music.search');
@@ -944,16 +1001,19 @@ console.log('native music selection: local-only persistence after identity TTL, 
   assert.equal(saved.duration, 100); assert.match(saved.previewURL, /333.mp3$/);
   assert.equal(h.values[musicRecordKey].items.length, 1);
   const restarted = harness({values: h.values, sessionProfiles: true});
-  restarted.state.musicInfoPage = () => ({status_code: 0, music_id: '333', music_name: '已改名的原声'});
+  restarted.state.musicInfoPage = () => ({status_code: 5});
   restarted.state.musicPage = () => { assert.fail('saved source does not require searching or list scans'); };
   const result = await restarted.run('music.resolve', {id: '333'});
-  assert.equal(result.name, '已改名的原声'); assert.equal(result.duration, 100); assert.equal(result.previewURL, saved.previewURL);
-  assert.equal(restarted.state.paths.some(path => path.includes('/music/search/')), false);
+  assert.equal(result.name, '合成音乐'); assert.equal(result.duration, 100); assert.equal(result.previewURL, saved.previewURL);
+  assert.equal(restarted.state.paths.length, 0, 'restored preview does not wait for any remote request');
+  delete h.values[musicRecordKey].items[0].name;
+  assert.equal((await restarted.run('music.resolve', {id: '333'})).name, undefined, 'legacy records remain usable without fabricated metadata');
   assert.equal(JSON.stringify(h.values).includes('synthetic-memory-only-signature'), false);
   restarted.state.profile = 'other-profile';
+  restarted.state.musicInfoPage = undefined;
   restarted.state.musicPage = () => ({status_code: 0, songs: [], has_more: false});
   assert.equal((await restarted.run('music.resolve', {id: '333'})).previewURL, null, 'same account ID in a different profile cannot borrow audio');
-  await assert.rejects(restarted.run('music.select', {id: '333', keepIds: ['333']}), /查询记录已失效/);
+  await assert.rejects(restarted.run('music.select', {id: '333', keepIds: ['333']}), /没有这首音乐的查询记录/);
   assert.equal(h.values[musicRecordKey].items.length, 1);
 }
 // 来源过期只在下一次明确请求时刷新，并先抛弃旧地址；找不到不能回送原地址或按名称搜索。
@@ -985,14 +1045,71 @@ console.log('native music selection: local-only persistence after identity TTL, 
   await assert.rejects(full.run('music.select', {id: '333', keepIds: ['333']}), /记录已满/);
   assert.equal(full.values[musicRecordKey].items.length, 128);
 }
-// 详情存在不等于旧稿具备音源；旧稿无记录且列表找不到时保留选择，不伪造时长或开始上传。
+// 旧稿只有身份且无真实时长记录时保留选择，不使用草稿自带时长，也不开始上传。
 {
   const h = harness(), value = draft({music: {id: '333', name: '原声', duration: 9999}}), snapshot = structuredClone(value);
-  h.state.musicPage = () => ({status_code: 0, songs: [], has_more: false});
-  await assert.rejects(h.run('publication.prepare', {draft: value}), /缺少已核验的音频资料/);
+  h.state.musicPage = () => { assert.fail('missing duration does not trigger a list scan'); };
+  await assert.rejects(h.run('publication.prepare', {draft: value}), error => error.code === 'MUSIC_METADATA_MISSING');
+  assert.equal(h.state.musicRequests.length, 0);
   assert.equal(h.state.uploads, 0); assert.deepEqual(value, snapshot);
 }
-console.log('native saved music: scope-bound selected records, ID metadata verification, bounded exact-ID recovery, source refresh, capacity and honest legacy gaps passed');
+// A 的选曲切到 B 后，同一音乐 ID 的真实时长可复用，音源、账号和上传检查点仍保持隔离。
+{
+  const h = harness({sessionProfiles: true});
+  await h.run('music.search'); await h.run('music.select', {id: '333', keepIds: ['333']});
+  const value = draft({music: {id: '333', name: '合成音乐', duration: 9999}}), snapshot = structuredClone(value);
+  const first = await h.run('publication.prepare', {draft: value});
+  const selectedBefore = structuredClone(h.values[musicRecordKey]), before = h.state.paths.length;
+  h.state.account = h.state.hostAccount = '456'; h.state.profile = 'profile-456'; h.engine.invalidate();
+  h.state.onUpload = input => {
+    assert.equal(input.account, '456');
+    assert.deepEqual(input.previous, [], 'B must not reuse A’s uploaded assets or preparation checkpoint');
+  };
+  h.state.musicPage = () => { assert.fail('B must not scan recommendation or favorite lists for the retained ID'); };
+  const prepared = await h.run('publication.prepare', {draft: value}), record = preparedRecord(h, prepared);
+  assert.equal(prepared.canPublish, true); assert.notEqual(prepared.preparationId, first.preparationId);
+  assert.equal(record.accountId, '456'); assert.equal(record.account.id, '456');
+  assert.equal(record.payload.item.common.music_id, '333');
+  assert.equal(record.payload.item.common.music_end_time, 100000, 'reuse verified music metadata, not the draft’s arbitrary duration');
+  assert.equal(h.state.uploads, 2, 'each account prepares its own upload');
+  assert.equal(JSON.stringify(record).includes(selectedBefore.items[0].previewURL), false, 'A’s audio URL is not copied into B’s preparation');
+  assert.deepEqual(value, snapshot); assert.equal(h.state.posts.length, 0);
+  const requests = h.state.paths.slice(before);
+  assert.equal(requests.filter(path => path === '/web/api/media/music/info/').length, 1);
+  assert.equal(requests.filter(path => path === '/web/api/media/user/info/').length, 1);
+  assert.equal(requests.some(path => ['/web/api/media/music/category', '/web/api/media/music/list', '/web/api/media/aweme/search/post/auth', '/openapi/aweme/v1/music/search/'].includes(path)), false);
+  const foreign = h.values[musicRecordKey].items.filter(item => item.profileId === 'profile-123' && item.accountId === '123');
+  assert.deepEqual(foreign, selectedBefore.items, 'reading public duration does not mutate A’s selected music records');
+  assert.equal(h.values[musicRecordKey].items.some(item => item.accountId === '456' && item.previewURL === selectedBefore.items[0].previewURL), false);
+  h.state.musicPage = () => ({status_code: 0, songs: [], has_more: false});
+  assert.equal((await h.run('music.resolve', {id: '333'})).previewURL, null, 'B still cannot borrow A’s audio URL for preview');
+}
+
+// 即使 A 有真实时长，B 的详情拒绝或回错 ID 时也不能获得可发布资格。
+for (const info of [{status_code: 0, music_id: '334', music_name: '合成音乐'}, {status_code: 5}]) {
+  const h = harness({sessionProfiles: true});
+  await h.run('music.search'); await h.run('music.select', {id: '333', keepIds: ['333']});
+  h.state.account = h.state.hostAccount = '456'; h.state.profile = 'profile-456'; h.engine.invalidate();
+  h.state.musicInfoPage = () => info;
+  const before = h.state.paths.length, value = draft({music: {id: '333', name: '合成音乐'}}), snapshot = structuredClone(value);
+  await assert.rejects(h.run('publication.prepare', {draft: value}), error => error.code === 'CHOICE_LOOKUP_FAILED');
+  assert.equal(h.state.uploads, 0); assert.equal(h.state.posts.length, 0); assert.deepEqual(value, snapshot);
+  assert.equal(h.state.paths.slice(before).filter(path => path === '/web/api/media/music/info/').length, 1);
+  assert.equal(h.state.paths.slice(before).some(path => ['/web/api/media/music/category', '/web/api/media/music/list'].includes(path)), false);
+}
+
+// 公共时长只按完整音乐 ID 使用；同名其他歌曲的真实记录不能填补当前音乐缺失的时长。
+{
+  const h = harness({sessionProfiles: true});
+  h.state.musicPage = () => ({status_code: 0, songs: [{music_id: '334', music_name: '合成音乐', duration: 30}], has_more: false});
+  await h.run('music.search'); await h.run('music.select', {id: '334', keepIds: ['334']});
+  h.state.account = h.state.hostAccount = '456'; h.state.profile = 'profile-456'; h.engine.invalidate();
+  const before = h.state.paths.length;
+  await assert.rejects(h.run('publication.prepare', {draft: draft({music: {id: '333', name: '合成音乐', duration: 9999}})}), error => error.code === 'MUSIC_METADATA_MISSING');
+  assert.equal(h.state.uploads, 0); assert.equal(h.state.posts.length, 0);
+  assert.equal(h.state.paths.slice(before).some(path => ['/web/api/media/music/category', '/web/api/media/music/list'].includes(path)), false);
+}
+console.log('native saved music: exact-ID metadata across accounts, isolated preview/upload state, no preparation list scans, source refresh and explicit missing metadata passed');
 
 // 实际图文上传编排只在准备入口核验一次账号；候选数量与独立封面都不增加账号请求。
 for (const withMusic of [false, true]) {
@@ -1004,8 +1121,8 @@ for (const withMusic of [false, true]) {
   const requests = h.state.paths.slice(start);
   assert.equal(requests.filter(path => path === '/web/api/media/user/info/').length, 1);
   assert.equal(requests.filter(path => path === '/web/api/media/upload/auth/v5/').length, 1);
-  assert.equal(requests.filter(path => path === '/aweme/v3/user_declaration/suggestion/').length, 2, 'actual declaration rules are still read around uploading');
-  if (withMusic) assert.equal(requests.filter(path => path === '/web/api/media/music/info/').length, 2, 'music ID metadata is still verified around uploading');
+  assert.equal(requests.filter(path => path === '/aweme/v3/user_declaration/suggestion/').length, 1, 'declaration rules are read once per preparation');
+  if (withMusic) assert.equal(requests.filter(path => path === '/web/api/media/music/info/').length, 1, 'music ID metadata is verified once per preparation');
 }
 
 // 视频处理的真实循环只增加转码请求，不按每一轮加两次账号核验。
@@ -1089,7 +1206,74 @@ for (const failure of ['offline', 'generation']) {
   assert.equal(h.state.uploads, 0); assert.deepEqual(h.values, snapshot);
 }
 
-// 当前平台返回同一 ID 的新名称时采用它；合集集数与地点附加字段仍取真实业务结果。
+// A 已选的公共身份可用于 B 草稿；地点复用城市线索，但发布附加字段必须来自 B 的新响应。
+{
+  const h = harness({sessionProfiles: true});
+  await h.run('topics.search', {query: '真实'}); await h.run('users.search', {query: '好友'});
+  h.state.locationPage = () => ({status_code: 0, poi_list: [{poi_id: '401', poi_name: '合成公园',
+    anchor_post_ext: {anchor_content: '{"scope":"A"}'}, is_commerce_intention: false}], has_more: false});
+  const locations = await h.run('locations.search', {query: '公园', cityCode: '440300', cityName: '深圳市'});
+  const value = draft({topics: [{id: '222', name: '真实候选'}], mentions: [{id: '601', name: '合成好友'}], hotspot: '城市日落',
+    location: {id: locations.items[0].id, name: locations.items[0].name}}), snapshot = structuredClone(value);
+  const first = await h.run('publication.prepare', {draft: value}), firstRecord = structuredClone(preparedRecord(h, first));
+  assert.deepEqual(JSON.parse(firstRecord.payload.item.anchor.anchor_content), {scope: 'A', is_commerce_intention: false});
+  h.state.account = h.state.hostAccount = '456'; h.state.profile = 'profile-456'; h.engine.invalidate();
+  h.state.locationPage = () => ({status_code: 0, poi_list: [{poi_id: '401', poi_name: '公园当前名称',
+    anchor_post_ext: {anchor_content: '{"scope":"B"}'}, is_commerce_intention: true}], has_more: false});
+  h.state.onUpload = input => {
+    assert.equal(input.account, '456');
+    assert.deepEqual(input.previous, [], 'public identity reuse never transfers A’s upload checkpoint into B');
+  };
+  const requests = [];
+  h.state.onRequest = (url, options) => requests.push({url: new URL(url), profileId: options.profileId});
+  const prepared = await h.run('publication.prepare', {draft: value}), record = preparedRecord(h, prepared), common = record.payload.item.common;
+  assert.equal(prepared.canPublish, true); assert.notEqual(prepared.preparationId, first.preparationId);
+  assert.equal(record.accountId, '456'); assert.deepEqual(value, snapshot);
+  assert.deepEqual(record.draft.topics, snapshot.topics); assert.deepEqual(record.draft.mentions, snapshot.mentions);
+  assert.deepEqual(JSON.parse(common.challenges), ['222']); assert.deepEqual(JSON.parse(common.mentions), ['601']);
+  const extras = JSON.parse(common.text_extra);
+  assert.ok(extras.some(item => item.type === 1 && item.hashtag_id === '222' && item.hashtag_name === '真实候选'));
+  assert.ok(extras.some(item => item.type === 0 && item.user_id === '601'));
+  assert.equal(common.hot_sentence, snapshot.hotspot);
+  assert.equal(record.payload.item.anchor.poi_id, '401'); assert.equal(record.payload.item.anchor.poi_name, '公园当前名称');
+  assert.deepEqual(JSON.parse(record.payload.item.anchor.anchor_content), {scope: 'B', is_commerce_intention: true});
+  const lookups = requests.filter(request => request.url.pathname === '/aweme/v1/life/video_api/search/poi/');
+  assert.equal(lookups.length, 1); assert.equal(lookups[0].url.searchParams.get('selected_city_code'), '440300');
+  assert.equal(lookups[0].url.searchParams.get('selected_city_name'), '深圳市'); assert.equal(lookups[0].url.searchParams.get('keywords'), '公园');
+  assert.ok(requests.every(request => request.profileId === 'profile-456'), 'all current responses are obtained using B’s browser profile');
+  assert.equal(requests.filter(request => request.url.pathname === '/web/api/media/user/info/').length, 1);
+  assert.equal(requests.some(request => ['/aweme/v1/search/challengesug/', '/web/api/v2/discover/search/', '/web/api/v2/user/recent/contact/', '/aweme/v1/hotspot/search/', '/aweme/v1/hotspot/recommend/'].includes(request.url.pathname)), false);
+  assert.equal(h.state.uploads, 2); assert.equal(h.state.posts.length, 0);
+  assert.deepEqual(preparedRecord(h, first), firstRecord, 'B preparation leaves A’s publication record unchanged');
+  const requestCount = requests.length;
+  await assert.rejects(h.engine.dispatch('publication.publish', {preparationId: first.preparationId, requestId: 'public-identities-cross-account', expectedAccountId: '456', confirmed: true},
+    {origin, profileId: h.state.profile, expectedAccountId: '456'}), error => error.code === 'ACCOUNT_CHANGED');
+  assert.equal(requests.length, requestCount); assert.equal(h.state.posts.length, 0, 'B cannot submit A’s prepared record');
+  assert.deepEqual(preparedRecord(h, first), firstRecord);
+}
+
+// B 查不到原地点或需要原生确认时，不能用 A 的旧附加字段继续准备，也不产生 B 上传或发布记录。
+for (const reason of ['missing', 'native-confirmation']) {
+  const h = harness({sessionProfiles: true});
+  h.state.locationPage = () => ({status_code: 0, poi_list: [{poi_id: '401', poi_name: '合成公园',
+    anchor_post_ext: {anchor_content: '{"scope":"A"}'}, is_commerce_intention: false}], has_more: false});
+  const locations = await h.run('locations.search', {query: '公园', cityCode: '440300', cityName: '深圳市'});
+  const value = draft({location: {id: locations.items[0].id, name: locations.items[0].name}}), snapshot = structuredClone(value);
+  const first = await h.run('publication.prepare', {draft: value}), firstRecord = structuredClone(preparedRecord(h, first));
+  h.state.account = h.state.hostAccount = '456'; h.state.profile = 'profile-456'; h.engine.invalidate();
+  h.state.locationPage = () => ({status_code: 0, poi_list: reason === 'missing' ? [] : [{poi_id: '401', poi_name: '合成公园',
+    anchor_post_ext: {anchor_content: '{"scope":"B"}'}, trigger_key_user_block: true}], has_more: false});
+  h.state.onUpload = () => { assert.fail('B’s unavailable location must stop before upload'); };
+  const before = h.state.paths.length;
+  await assert.rejects(h.run('publication.prepare', {draft: value}), error => reason === 'missing' ? error.code === 'CHOICE_UNAVAILABLE' : /平台额外确认/.test(error.message));
+  assert.ok(h.state.paths.slice(before).includes('/aweme/v1/life/video_api/search/poi/'));
+  assert.equal(h.state.uploads, 1); assert.equal(h.state.posts.length, 0); assert.deepEqual(value, snapshot);
+  assert.deepEqual(Object.keys(h.values['luma-studio-publications-v1'].preparations), [first.preparationId]);
+  assert.deepEqual(preparedRecord(h, first), firstRecord);
+}
+console.log('native public identities: A-to-B topic/mention/hotspot reuse, current-profile location fields, isolated uploads and publication ownership passed');
+
+// 话题和用户保留已编辑的名称及ID；合集与地点仍从当前业务查询取得新名称、集数及附加字段。
 {
   const h = harness({sessionProfiles: true});
   await h.run('topics.search', {query: '真实'}); await h.run('users.search', {query: '好友'});
@@ -1102,7 +1286,9 @@ for (const failure of ['offline', 'generation']) {
     location: {id: '401', name: '合成公园', cityCode: '440300', cityName: '深圳市'}, collection: {id: '501', name: '合成合集'}});
   const original = structuredClone(value), prepared = await h.run('publication.prepare', {draft: value}), record = preparedRecord(h, prepared);
   assert.deepEqual(value, original);
-  assert.equal(record.draft.topics[0].name, '新话题名称'); assert.equal(record.draft.mentions[0].name, '新好友名称');
+  assert.equal(record.draft.topics[0].name, '真实候选'); assert.equal(record.draft.mentions[0].name, '合成好友');
+  assert.equal(h.state.queries, 1);
+  assert.equal(h.state.paths.filter(path => path === '/web/api/v2/discover/search/').length, 1, 'only the explicit selection query runs; preparation keeps the edited identities');
   assert.equal(record.draft.collection.name, '全新合集名称'); assert.deepEqual(record.payload.item.mix, {mix_id: '501', mix_order: 8});
   assert.equal(record.payload.item.anchor.poi_name, '新地点名称'); assert.equal(record.payload.item.anchor.poi_id, '401');
   assert.deepEqual(JSON.parse(record.payload.item.anchor.anchor_content), {verified: true, is_commerce_intention: false});

@@ -133,15 +133,62 @@
           </section>
 
           <section id="activity-panel" class="panel activity-panel" hidden><div class="section-heading"><h2>本次进度</h2><button id="cancel-operation" hidden>取消等待</button></div><p id="activity-message" role="status"></p><progress id="activity-progress" hidden max="100"></progress><div id="activity-items" class="activity-items"></div></section>
+        <section id="receipt-panel" class="receipt-panel" hidden><div class="section-heading"><h2 id="receipt-title">发布状态</h2></div><p id="receipt-message"></p><small id="receipt-id" class="muted"></small><div class="inline-actions"><button id="refresh-publication">查询发布状态</button><a id="publication-link" target="_blank" rel="noopener" hidden>查看作品 ↗</a></div></section>
+        <details class="capability-panel"><summary>当前账号可用能力</summary><p class="capability-note">图文与普通视频已接入。全景视频与文章暂未接入，实际发布状态以平台回执为准。</p><div id="capability-list">核对账号后读取</div></details>
         </div>
         <footer class="actionbar"><div class="action-status"><strong id="work-state">编辑作品</strong><small id="validation-summary">先登录抖音并核对账号</small></div><div class="publish-actions"><button id="publish" class="primary">发布…</button><button id="prepare">上传并检查</button><button id="save-draft">保存草稿</button></div></footer>
       </section>
 
       <aside class="preview-column" aria-label="作品预览">
-        <div class="preview-heading"><strong>预览图文</strong><span>编辑预览</span></div>
+        <div class="preview-heading"><strong id="preview-kind">预览图文</strong><span>编辑预览</span></div>
         <div id="douyin-preview"></div>
-        <section id="receipt-panel" class="receipt-panel" hidden><div class="section-heading"><h2 id="receipt-title">发布状态</h2></div><p id="receipt-message"></p><small id="receipt-id" class="muted"></small><div class="inline-actions"><button id="refresh-publication">查询发布状态</button><a id="publication-link" target="_blank" rel="noopener" hidden>查看作品 ↗</a></div></section>
-        <details class="capability-panel"><summary>当前账号可用能力</summary><p class="capability-note">图文与普通视频已接入。全景视频与文章暂未接入，实际发布状态以平台回执为准。</p><div id="capability-list">核对账号后读取</div></details>
+      </aside>
+
+      <aside id="ai-suggestions" class="ai-suggestions" aria-label="AI 建议" hidden>
+        <div class="ai-suggestions-heading"><div><h2>✧ AI 建议</h2><span class="helper">按需选择，应用到作品</span></div><button id="ai-close" type="button" aria-label="关闭 AI 助手">×</button></div>
+        <div class="ai-suggestions-scroll">
+          <section id="ai-dialog" class="ai-input-panel" aria-label="AI 作品信息" hidden>
+            <button id="ai-toggle-input" class="ai-input-toggle" type="button" aria-expanded="true" aria-controls="ai-input-body"><span class="ai-input-title"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg><span id="ai-input-title">作品信息</span></span><span id="ai-input-toggle-label">收起</span></button>
+            <div id="ai-input-body">
+              <textarea id="ai-context" aria-labelledby="ai-input-title" rows="2" maxlength="6000" placeholder="说明拍摄地点、主题、背景和期望语气，例如：惠州大南山，周末徒步。"></textarea>
+              <div class="ai-input-options">
+                <label class="ai-check"><input id="ai-use-images" type="checkbox" aria-describedby="ai-image-hint">结合图片分析</label>
+                <section id="ai-image-section" hidden><div class="ai-image-heading"><span id="ai-image-count" class="helper">已选择 0 / 6 张</span><button id="ai-toggle-images" class="text-button" aria-expanded="true">收起图片</button></div><div id="ai-images" class="ai-images"></div></section>
+                <div class="ai-generation-actions"><button id="ai-cancel" type="button" hidden>取消生成</button><button id="ai-generate" type="button" class="primary">生成建议</button></div>
+              </div>
+              <p id="ai-image-hint" class="helper">仅将勾选图片的缩略图发送至图库配置的 AI，不发送原图。</p>
+              <details class="ai-global-prompt"><summary>创作要求</summary><div class="ai-prompt-heading"><label for="ai-prompt" class="helper">自定义提示词</label><button id="ai-reset-prompt" type="button" class="text-button">恢复默认</button></div><textarea id="ai-prompt" rows="3" maxlength="8000"></textarea></details>
+            </div>
+            <p id="ai-status" class="helper" role="status">填写作品信息后，生成文案、活动、音乐、位置和热点建议。</p>
+          </section>
+          <p id="ai-empty" class="ai-empty">填写上方作品信息，点击「生成建议」。</p>
+          <section id="ai-result" hidden>
+            <section class="ai-suggestion-card" data-ai-scope="copy">
+              <div class="ai-card-heading"><label class="ai-check"><input id="ai-apply-copy" type="checkbox" checked>作品描述</label><div class="ai-card-actions"><button id="ai-regenerate-copy" type="button" class="text-button">换一版</button><button id="ai-edit-copy" type="button" class="text-button">编辑</button></div></div>
+              <div class="ai-result-copy"><strong id="ai-result-title"></strong><p id="ai-result-description"></p></div>
+              <p id="ai-copy-status" class="ai-item-status helper" role="status" hidden></p>
+            </section>
+            <section class="ai-suggestion-card ai-result-resource" data-ai-scope="activity">
+              <div class="ai-card-heading"><label class="ai-check"><input id="ai-apply-activity" type="checkbox">官方活动</label><div class="ai-card-actions"><button id="ai-regenerate-activity" type="button" class="text-button">更换</button></div></div>
+              <strong id="ai-result-activity"></strong><p id="ai-activity-reason" class="helper"></p><p id="ai-existing-activity" class="helper"></p><p id="ai-activity-status" class="ai-item-status helper" role="status" hidden></p>
+            </section>
+            <section class="ai-suggestion-card ai-result-resource" data-ai-scope="music">
+              <div class="ai-card-heading"><label class="ai-check"><input id="ai-apply-music" type="checkbox">选择音乐</label><div class="ai-card-actions"><button id="ai-regenerate-music" type="button" class="text-button">换一首</button><button id="ai-edit-music-prompt" type="button" class="ai-prompt-edit" aria-label="编辑音乐推荐提示词" title="编辑音乐推荐提示词"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 5 4 4M4 20l4.5-1 11-11a2.8 2.8 0 0 0-4-4l-11 11L4 20Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+              <strong id="ai-result-music"></strong><p id="ai-music-reason" class="helper"></p><p id="ai-existing-music" class="helper"></p><audio id="ai-result-audio" controls preload="none" hidden></audio><p id="ai-music-status" class="ai-item-status helper" role="status" hidden></p>
+            </section>
+            <section class="ai-suggestion-card ai-result-resource" data-ai-scope="location">
+              <div class="ai-card-heading"><label class="ai-check"><input id="ai-apply-location" type="checkbox">地理位置</label><div class="ai-card-actions"><button id="ai-regenerate-location" type="button" class="text-button">更换</button></div></div>
+              <strong id="ai-result-location"></strong><p id="ai-location-reason" class="helper"></p><p id="ai-existing-location" class="helper"></p><p id="ai-location-status" class="ai-item-status helper" role="status" hidden></p>
+            </section>
+            <section class="ai-suggestion-card ai-result-resource" data-ai-scope="hotspot">
+              <div class="ai-card-heading"><label class="ai-check"><input id="ai-apply-hotspot" type="checkbox">关联热点</label><div class="ai-card-actions"><button id="ai-regenerate-hotspot" type="button" class="text-button">更换</button><button id="ai-edit-hotspot-prompt" type="button" class="ai-prompt-edit" aria-label="编辑热点推荐提示词" title="编辑热点推荐提示词"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 5 4 4M4 20l4.5-1 11-11a2.8 2.8 0 0 0-4-4l-11 11L4 20Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+              <strong id="ai-result-hotspot"></strong><p id="ai-hotspot-reason" class="helper"></p><p id="ai-existing-hotspot" class="helper"></p><p id="ai-hotspot-status" class="ai-item-status helper" role="status" hidden></p>
+            </section>
+            <div id="ai-warnings" role="status"></div>
+          </section>
+          <button id="ai-retry-resources" type="button" hidden>重试资源匹配</button>
+        </div>
+        <footer class="ai-suggestions-footer"><div><strong id="ai-selected-count">已选择 0 项</strong><span class="helper">未勾选的内容保持原样</span></div><button id="ai-apply" type="button" class="primary" disabled>应用所选</button></footer>
       </aside>
     </main>
   </div>
@@ -150,22 +197,19 @@
   <dialog id="search-dialog" class="search-dialog"><div class="dialog-header"><h2 id="search-heading">搜索</h2><button id="search-close" aria-label="关闭搜索">×</button></div><form id="search-form" class="search-bar"><input id="search-query" placeholder="输入关键词" autocomplete="off"><button id="run-search" class="primary" type="submit">搜索</button></form><p id="search-message" class="helper" role="status"></p><div id="music-tabs" class="music-tabs" hidden></div><div id="search-results" class="search-results"></div><button id="search-more" hidden>加载更多</button><div id="music-playback" hidden></div><p id="music-footnote" class="music-footnote" hidden>ⓘ 音乐封面以发布后播放页面展示为准</p><div class="dialog-footer"><button id="search-done">完成</button></div></dialog>
   <dialog id="cover-picker" class="cover-picker" aria-labelledby="cover-picker-title"><div class="dialog-header"><h2 id="cover-picker-title">选择封面</h2><button id="cover-picker-close" aria-label="关闭封面选择">×</button></div><p class="helper">可选择当前图片，也可从图库单独选择封面</p><div id="cover-picker-grid" class="cover-picker-grid" role="group" aria-label="当前作品图片"></div><div class="dialog-footer"><button id="cover-picker-library">从图库选择</button><button id="cover-picker-cancel">取消</button><button id="cover-picker-confirm" class="primary" disabled>确定</button></div></dialog>
   <dialog id="confirm-dialog" class="confirm-dialog"><div class="dialog-header"><h2 id="confirm-title">确认操作</h2></div><div id="confirm-content"></div><div class="dialog-footer"><button id="confirm-cancel">取消</button><button id="confirm-submit" class="primary">确认</button></div></dialog>
-  <dialog id="ai-dialog" class="ai-dialog">
-    <div class="dialog-header"><h2>AI 助手</h2><button id="ai-close" aria-label="关闭 AI 助手">×</button></div>
-    <label class="field-label" for="ai-context">作品信息</label>
-    <textarea id="ai-context" rows="3" maxlength="6000" placeholder="说明拍摄地点、主题、背景和期望语气，例如：惠州大南山，周末徒步。"></textarea>
-    <div class="ai-image-heading"><label class="ai-check"><input id="ai-use-images" type="checkbox">结合图片分析</label></div>
-    <p id="ai-image-hint" class="helper">仅发送勾选图片的缩略图，不发送原图。</p>
-    <section id="ai-image-section" hidden><div class="ai-image-heading"><span id="ai-image-count" class="helper">已选择 0 / 6 张</span><button id="ai-toggle-images" class="text-button" aria-expanded="true">收起图片</button></div><div id="ai-images" class="ai-images"></div></section>
-    <details><summary>自定义提示词</summary><div class="ai-prompt-heading"><label for="ai-prompt" class="helper">创作要求</label><button id="ai-reset-prompt" class="text-button">恢复默认</button></div><textarea id="ai-prompt" rows="5" maxlength="8000"></textarea></details>
-    <p id="ai-status" class="helper" role="status">使用图库已配置的 AI 连接。</p>
-    <section id="ai-result" hidden>
-      <label class="ai-check"><input id="ai-apply-copy" type="checkbox" checked>应用标题和描述</label><div class="ai-result-copy"><strong id="ai-result-title"></strong><p id="ai-result-description"></p></div>
-      <div class="ai-result-resource"><label class="ai-check"><input id="ai-apply-location" type="checkbox">应用位置建议</label><strong id="ai-result-location"></strong><p id="ai-location-reason" class="helper"></p><p id="ai-existing-location" class="helper"></p></div>
-      <div class="ai-result-resource"><label class="ai-check"><input id="ai-apply-music" type="checkbox">应用背景音乐</label><strong id="ai-result-music"></strong><p id="ai-music-reason" class="helper"></p><p id="ai-existing-music" class="helper"></p><audio id="ai-result-audio" controls preload="none" hidden></audio></div>
-      <div id="ai-warnings" role="status"></div>
-    </section>
-    <div class="dialog-footer"><button id="ai-cancel" hidden>取消生成</button><button id="ai-retry-resources" hidden>重试资源匹配</button><button id="ai-generate">生成建议</button><button id="ai-apply" class="primary" disabled>应用所选</button></div>
+  <dialog id="ai-resource-prompt-dialog" class="ai-edit-dialog" aria-labelledby="ai-resource-prompt-title">
+    <div class="dialog-header"><h2 id="ai-resource-prompt-title">推荐提示词</h2><button id="ai-resource-prompt-close" type="button" aria-label="关闭提示词编辑">×</button></div>
+    <label class="visually-hidden" for="ai-resource-prompt">本项提示词</label>
+    <textarea id="ai-resource-prompt" rows="5" maxlength="4000" placeholder="填写对本项推荐的要求"></textarea>
+    <p id="ai-resource-prompt-hint" class="helper">仅用于本项推荐，留空则使用作品信息中的统一要求。</p>
+    <div class="dialog-footer"><button id="ai-resource-prompt-cancel" type="button">取消</button><button id="ai-resource-prompt-save" type="button" class="primary">保存</button></div>
+  </dialog>
+  <dialog id="ai-copy-dialog" class="ai-edit-dialog" aria-labelledby="ai-copy-dialog-title">
+    <div class="dialog-header"><h2 id="ai-copy-dialog-title">编辑文案建议</h2><button id="ai-copy-close" type="button" aria-label="关闭文案编辑">×</button></div>
+    <label class="field-label" for="ai-copy-title">标题</label><input id="ai-copy-title" maxlength="20" autocomplete="off">
+    <label class="field-label" for="ai-copy-description">作品描述</label><textarea id="ai-copy-description" rows="7" maxlength="1000"></textarea>
+    <p id="ai-copy-message" class="helper" role="status"></p>
+    <div class="dialog-footer"><button id="ai-copy-cancel" type="button">取消</button><button id="ai-copy-save" type="button" class="primary">保存</button></div>
   </dialog>
   <script type="module" src="./studio.js"></script>
 </body>

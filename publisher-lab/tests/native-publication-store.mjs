@@ -19,6 +19,29 @@ const store = create();
 const input = () => ({account: {id: '123', name: '合成账号'}, origin, draft: {title: '作品', description: 'd'.repeat(40000)}, payload: {item: 'p'.repeat(40000)}, summary: {title: '作品', kind: 'image', count: 1}});
 const submit = (prepared, requestId) => ({preparationId: prepared.preparationId, requestId, origin, expectedAccountId: '123', confirmed: true});
 
+// 用户可以发布 JSON 教程；正文/标题/展示文本中的字段名不是实际凭据。
+{
+  const data = {};
+  const textStore = createPublicationStore({storage: {
+    async get(name) { return structuredClone({[name]: data[name]}); },
+    async set(update) { Object.assign(data, structuredClone(update)); },
+  }, now: () => clock, uuid: () => `text-store-${++sequence}`});
+  const text = '{"password":"这里只是文案示例","authorization":"字段说明"}';
+  const draft = {title: '["secret"]', description: text};
+  const prepared = await textStore.prepare({...input(), draft, payload: {common: {text}}, summary: {title: draft.title}});
+  const snapshot = await textStore.getPrepared(prepared.preparationId, origin, '123');
+  assert.deepEqual(snapshot.draft, draft, 'JSON-shaped user text remains unchanged');
+  assert.equal(snapshot.payload.common.text, text);
+  await textStore.beginSubmit(submit(prepared, 'text-request'));
+  await textStore.finish(prepared.preparationId, {status: 'unknown', message: text});
+  assert.equal((await textStore.findStatus({requestId: 'text-request', origin})).message, text);
+  for (const field of ['cookie', 'upload_auth', 'authorization', 'access_token', 'refresh_token', 'session_key', 'password']) {
+    await assert.rejects(textStore.prepare({...input(), payload: {nested: [{[field]: 'synthetic-credential'}]}}), {code: 'SENSITIVE_SNAPSHOT'});
+  }
+  await assert.rejects(textStore.prepare({...input(), account: {id: '123', secret: 'synthetic-credential'}}), {code: 'SENSITIVE_SNAPSHOT'});
+  await assert.rejects(textStore.finish(prepared.preparationId, {status: 'unknown', authorization: 'synthetic-credential'}), {code: 'SENSITIVE_SNAPSHOT'});
+}
+
 // 首份明确回执和后续处理中/未知/在途记录过期后仍保留，不能被快照清理解锁。
 const published = await store.prepare(input());
 const sent = await store.beginSubmit(submit(published, 'published-request'));

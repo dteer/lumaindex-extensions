@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/isolation.mjs && node tests/publication-store.mjs && node tests/native-publication-store.mjs && node tests/publication-payload.mjs && node tests/creator-api.mjs && node tests/worker.mjs && node tests/browser-request.mjs && node tests/native-transport.mjs && node tests/native-engine.mjs && node tests/native-cancellation.mjs && node tests/library-selection.mjs && node tests/studio-state.mjs && node tests/studio-ai.mjs",
-    "test:reference": "node tests/studio-bridge.mjs && node tests/legacy-chrome-client.mjs",
+    "test": "node tests/isolation.mjs && node tests/publication-store.mjs && node tests/native-publication-store.mjs && node tests/publication-payload.mjs && node tests/creator-api.mjs && node tests/browser-request.mjs && node tests/native-transport.mjs && node tests/native-engine.mjs && node tests/native-cancellation.mjs && node tests/library-selection.mjs && node tests/studio-state.mjs && node tests/ai-apply.mjs && node tests/studio-ai.mjs",
+    "test:reference": "node tests/reference-isolation.mjs && node tests/reference-publication-store.mjs && node tests/reference-publication-payload.mjs && node tests/reference-creator-api.mjs && node tests/worker.mjs && node tests/studio-bridge.mjs && node tests/legacy-chrome-client.mjs",
     "build": "node build.mjs",
     "test:ui": "node tests/native-ui.mjs && node tests/status-query-ui.mjs && node tests/collection-visibility-ui.mjs && node tests/settings-help-ui.mjs && node tests/preparation-progress-ui.mjs && node tests/gallery-ui.mjs && node tests/resources-ui.mjs && node tests/music-ui.mjs && node tests/saved-music-ui.mjs && node tests/music-categories-ui.mjs && node tests/cities-ui.mjs && node tests/description-ui.mjs && node tests/ai-ui.mjs && node tests/activities-ui.mjs && node tests/activity-integration-ui.mjs && node tests/account-picker-ui.mjs && node tests/drafts-ui.mjs"
   },

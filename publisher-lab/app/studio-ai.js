@@ -163,33 +163,59 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
     return values;
   }
 
-  /** 单个资源失败不丢已经生成的文案；只有同草稿同账号的资源结果可进入本次匹配。 */
-  async function resources(input, analysis, job) {
-    const warnings = [], candidates = {locations: [], music: []};
-    const warn = (scope, code, message) => warnings.push({scope, code, message});
+  /** 单项偏好只影响对应任务；共同背景和图片仍由当前作品提供。 */
+  function analysisPrompt(input) {
+    const music = input.resourcePrompts.music;
+    return [input.prompt, music && `音乐推荐的单独要求（仅影响音乐线索，优先于共同要求）：\n${music}`].filter(Boolean).join('\n\n');
+  }
+
+  /** 分析仍使用已有结构契约；单项重做只提取所需结果，不覆盖其他建议。 */
+  async function analyze(input, job) {
+    const prompt = analysisPrompt(input);
+    if (prompt.length > 8000) throw failure('AI_INVALID_REQUEST', '创作要求与音乐提示词合计过长，请精简后重试。');
+    return analyzeResult(await ask(input.baseURL, {phase: 'analyze', prompt, context: input.context, assetIds: input.assetIds}, job), input.dateTag);
+  }
+
+  /** 只发送共同背景、文案及已抽取的线索，不把资源 URL 或会话信息交给模型。 */
+  function matchingContext(input, analysis) {
+    const context = `作品背景：\n${input.context}\n本次作品分析：\n${JSON.stringify(analysis)}`;
+    if (context.length > 16000) throw failure('AI_CONTEXT_TOO_LONG', '作品信息过长，请精简背景后重新匹配资源。');
+    return context;
+  }
+
+  /** 单个资源失败不丢其他建议；states 区分查询失败与成功但没有适合的候选。 */
+  async function resources(input, analysis, job, scopes = ['location', 'music'], previous = {}) {
+    const warnings = [], states = {}, candidates = {locations: [], music: []};
+    const values = Object.fromEntries(scopes.map(scope => [scope, null]));
+    const warn = (scope, code, message, state = 'error') => {
+      for (const key of scope === 'resources' ? scopes : [scope]) {
+        states[key] = state; warnings.push({scope: key, code, message});
+      }
+    };
     if (input.kind !== 'image') {
       warn('resources', 'AI_RESOURCES_UNSUPPORTED', '视频配乐和地点发布尚未接入，已保留文案与搜索线索。');
-      return {location: null, music: null, warnings};
+      return {...values, states, warnings};
     }
     if (!job.binding.accountId) {
-      warn('resources', 'AI_ACCOUNT_REQUIRED', '请先选择已保存的抖音账号，再重试地点和音乐匹配；当前文案已保留。');
-      return {location: null, music: null, warnings};
+      warn('resources', 'AI_ACCOUNT_REQUIRED', '请先选择已保存的抖音账号，再重试资源推荐；当前文案已保留。');
+      return {...values, states, warnings};
     }
-    progress(job, 'resources', '正在查询抖音真实地点和音乐候选…');
-    // 两类只读查询相互独立；局部失败保留另一类结果，不重发已经成功的 AI 分析。
+    progress(job, 'resources', '正在查询真实资源候选…');
     await Promise.all([
       (async () => {
-        if (!analysis.location) { warn('location', 'AI_LOCATION_UNCERTAIN', '没有足够的地点线索，可手动选择位置。'); return; }
+        if (!scopes.includes('location')) return;
+        if (!analysis.location) { warn('location', 'AI_LOCATION_UNCERTAIN', '没有足够的地点线索，可手动选择位置。', 'empty'); return; }
         try {
           const city = resolveCity(await cities(job), analysis.location.cityName);
-          if (!city) { warn('location', 'AI_CITY_UNCERTAIN', '无法唯一确认建议中的城市，请先手动确认城市。'); return; }
+          if (!city) { warn('location', 'AI_CITY_UNCERTAIN', '无法唯一确认建议中的城市，请先手动确认城市。', 'empty'); return; }
           check(job);
           const page = await client.request('locations.search', {kind: 'image', query: analysis.location.query, cityCode: city.code, cityName: city.name}, {signal: job.signal});
           check(job); candidates.locations = locationCandidates(page, city);
-          if (!candidates.locations.length) warn('location', 'AI_LOCATION_EMPTY', '未找到可用的真实地点候选，可调整地点关键词后手动选择。');
-        } catch (error) { check(job); warn('location', 'AI_LOCATION_QUERY_FAILED', publicMessage(error, '地点查询未完成，可仅重试资源匹配。')); }
+          if (!candidates.locations.length) warn('location', 'AI_LOCATION_EMPTY', '未找到可用的真实地点候选，可手动选择。', 'empty');
+        } catch (error) { check(job); warn('location', 'AI_LOCATION_QUERY_FAILED', publicMessage(error, '地点查询未完成，请重试。')); }
       })(),
       (async () => {
+        if (!scopes.includes('music')) return;
         const seen = new Set();
         for (const query of analysis.music.queries.length ? analysis.music.queries : ['']) {
           try {
@@ -198,69 +224,183 @@ export function createStudioAI({client, getCurrent, fetchImpl = globalThis.fetch
             check(job);
             for (const candidate of musicCandidates(page)) if (!seen.has(candidate.id) && candidates.music.length < CANDIDATE_LIMIT) { seen.add(candidate.id); candidates.music.push(candidate); }
           } catch (error) {
-            check(job); warn('music', 'AI_MUSIC_QUERY_FAILED', publicMessage(error, '音乐查询未完成，可仅重试资源匹配。'));
-            // 账号问题交给用户处理，不再用下一个关键词重复请求；此前成功的候选和文案仍保留。
+            check(job); warn('music', 'AI_MUSIC_QUERY_FAILED', publicMessage(error, '音乐查询未完成，请重试。'));
             if (['SESSION_EXPIRED', 'ACCOUNT_CHANGED', 'SESSION_CHANGED', 'SESSION_IDENTITY_MISMATCH'].includes(error.code)) break;
           }
           if (candidates.music.length >= CANDIDATE_LIMIT) break;
         }
-        if (!candidates.music.length && !warnings.some(item => item.scope === 'music')) warn('music', 'AI_MUSIC_EMPTY', '未找到可用的真实音乐候选，可手动搜索音乐。');
+        if (!candidates.music.length && !warnings.some(item => item.scope === 'music')) warn('music', 'AI_MUSIC_EMPTY', '未找到可用的真实音乐候选，可手动搜索。', 'empty');
       })(),
     ]);
     check(job);
-    if (!candidates.locations.length && !candidates.music.length) return {location: null, music: null, warnings};
-    progress(job, 'match', '正在从真实候选中选择地点和背景音乐…');
+    if (!candidates.locations.length && !candidates.music.length) return {...values, states, warnings};
+    for (const [scope, key] of [['location', 'locations'], ['music', 'music']]) {
+      if (previous[scope] && candidates[key].some(item => item.id !== previous[scope].id)) candidates[key] = candidates[key].filter(item => item.id !== previous[scope].id);
+    }
+    progress(job, 'match', '正在从真实候选中选择建议…');
     try {
-      const context = `作品背景：\n${input.context}\n本次作品分析：\n${JSON.stringify(analysis)}`;
-      if (context.length > 16000) throw failure('AI_CONTEXT_TOO_LONG', '作品信息过长，已保留文案；请精简背景后重新匹配资源。');
-      // 模型只收到候选白名单，不接收播放地址、封面 URL 或任何上传/会话凭据。
+      let context = matchingContext(input, analysis);
+      if (scopes.includes('music') && input.resourcePrompts.music) context += `\n音乐单独要求（优先）：\n${input.resourcePrompts.music}`;
+      if (context.length > 16000) throw failure('AI_CONTEXT_TOO_LONG', '作品信息和音乐要求过长，请精简后重试。');
       const result = await ask(input.baseURL, {phase: 'match', context, candidates: {locations: candidates.locations,
         music: candidates.music.map(({id, name, author, duration}) => ({id, name, author, duration}))}}, job);
-      const location = matchedItem(result?.location, candidates.locations), music = matchedItem(result?.music, candidates.music);
-      if (!location && candidates.locations.length) warn('location', 'AI_LOCATION_UNMATCHED', '现有地点候选不足以确认拍摄位置，请手动核对。');
-      if (!music && candidates.music.length) warn('music', 'AI_MUSIC_UNMATCHED', '现有候选中没有明确合适的背景音乐，可手动试听选择。');
-      return {location, music, warnings};
+      // 未请求的种类不会读取或修改；请求的种类仍严格匹配本轮真实候选。
+      for (const [scope, key] of [['location', 'locations'], ['music', 'music']]) {
+        if (!scopes.includes(scope) || !candidates[key].length) continue;
+        values[scope] = matchedItem(result?.[scope], candidates[key]);
+        states[scope] = values[scope] ? 'ready' : 'empty';
+        if (!values[scope]) warn(scope, scope === 'music' ? 'AI_MUSIC_UNMATCHED' : 'AI_LOCATION_UNMATCHED', scope === 'music' ? '现有候选中没有合适的背景音乐，可手动试听选择。' : '现有地点候选不足以确认拍摄位置，请手动核对。', 'empty');
+      }
+      return {...values, states, warnings};
     } catch (error) {
-      check(job); warn('resources', 'AI_MATCH_FAILED', publicMessage(error, '资源匹配未完成，文案已保留，可仅重试资源匹配。'));
-      return {location: null, music: null, warnings};
+      check(job); warn('resources', 'AI_MATCH_FAILED', publicMessage(error, '资源匹配未完成，其他建议已保留，请重试。'));
+      return {...Object.fromEntries(scopes.map(scope => [scope, null])), states, warnings};
     }
   }
 
-  /** 完成后只返回可检查建议；应用必须由界面显式决定，并先调用 isCurrent。 */
-  function finish(input, analysis, matched, job) {
+  /** 活动和热点只从平台实际列表中挑选，空结果表示明确建议不关联。 */
+  async function selectResource(input, analysis, job, scope, previous) {
+    const fail = error => ({[scope]: null, states: {[scope]: 'error'}, warnings: [{scope, code: error.code || 'AI_RESOURCE_FAILED', message: publicMessage(error, `${scope === 'activity' ? '活动' : '热点'}推荐未完成，请重试。`)}]});
+    if (!job.binding.accountId) return fail(failure('AI_ACCOUNT_REQUIRED', '请先选择已保存的抖音账号，再重试资源推荐。'));
+    try {
+      check(job);
+      const page = await client.request(scope === 'activity' ? 'activities.list' : 'hotspots.search',
+        scope === 'activity' ? {kind: input.kind} : {kind: input.kind, draftId: job.binding.draftId, query: ''}, {signal: job.signal});
+      check(job);
+      if (!Array.isArray(page?.items)) throw failure('AI_RESOURCE_FAILED', '平台候选列表读取失败，请重试。');
+      const seen = new Set();
+      let candidates = [];
+      for (const item of page.items) {
+        if (typeof item?.name !== 'string' || !item.name.trim() || item.name.length > 500) continue;
+        if (scope === 'activity' && (item.disabled || typeof item.id !== 'string' || !PLATFORM_ID.test(item.id))) continue;
+        const key = scope === 'activity' ? item.id : item.name;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // 热点只有真实词语，没有平台 ID；索引仅供本轮模型选择，绝不作为发布身份。
+        candidates.push(scope === 'activity'
+          ? {id: item.id, name: item.name, description: [item.topicName && `关联话题：${item.topicName}`, item.description].filter(Boolean).join('；').slice(0, 1000)}
+          : {id: `hotspot-${candidates.length}`, name: item.name, ...(Number.isFinite(item.heat) ? {heat: item.heat} : {})});
+        if (candidates.length >= 100) break;
+      }
+      if (previous && candidates.some(item => item.name !== previous.name)) candidates = candidates.filter(item => item.name !== previous.name);
+      if (!candidates.length) return {[scope]: null, states: {[scope]: 'empty'}, warnings: []};
+      const instruction = scope === 'activity'
+        ? '根据作品内容判断是否参加官方活动，只选择主题直接相关的活动；没有合适活动时返回 null，不为参加活动牵强改写作品。'
+        : '根据作品内容判断是否关联当前热点，只选择有明确内容关联的热点；没有合适热点时返回 null，不为热度强行关联。';
+      const custom = scope === 'hotspot' ? input.resourcePrompts.hotspot : '';
+      const prompt = [instruction, custom && `用户为本项单独定制的要求（与共同偏好冲突时以此为准）：\n${custom}`].filter(Boolean).join('\n');
+      if (prompt.length > 8000) throw failure('AI_INVALID_REQUEST', '本项提示词过长，请精简后重试。');
+      const selected = await ask(input.baseURL, {phase: 'select', context: matchingContext(input, analysis), prompt,
+        options: candidates.map(({id, name, description}) => ({id, name, ...(description ? {description} : {})}))}, job);
+      const choice = matchedItem(selected?.choice, candidates);
+      if (!choice) return {[scope]: null, states: {[scope]: 'empty'}, warnings: []};
+      if (scope === 'hotspot') return {hotspot: choice, states: {hotspot: 'ready'}, warnings: []};
+      const resolved = await client.request('activities.resolve', {id: choice.id}, {signal: job.signal});
+      check(job);
+      if (resolved?.id !== choice.id || resolved.disabled || typeof resolved.name !== 'string' || !resolved.name.trim() ||
+          typeof resolved.topic?.id !== 'string' || !PLATFORM_ID.test(resolved.topic.id) || typeof resolved.topic.name !== 'string' ||
+          !resolved.topic.name.trim() || resolved.topic.name.length > 200 || /[#\r\n]/u.test(resolved.topic.name)) throw failure('AI_ACTIVITY_UNAVAILABLE', '活动话题无法确认，请重新推荐或手动选择。');
+      return {activity: {id: resolved.id, name: resolved.name, topic: {id: resolved.topic.id, name: resolved.topic.name}, reason: choice.reason}, states: {activity: 'ready'}, warnings: []};
+    } catch (error) { check(job); return fail(error); }
+  }
+
+  /** 四项资源并行读取；本机账号错误留在对应项，其他已成功建议仍可采用。 */
+  async function recommend(input, analysis, job, scopes = ['activity', 'music', 'location', 'hotspot'], previous = {}) {
+    const tasks = [], basic = scopes.filter(scope => ['music', 'location'].includes(scope));
+    if (basic.length) tasks.push(resources(input, analysis, job, basic, previous));
+    for (const scope of ['activity', 'hotspot']) if (scopes.includes(scope)) tasks.push(selectResource(input, analysis, job, scope, previous[scope]));
+    const results = await Promise.all(tasks);
     check(job);
-    const result = {id: uuid(), binding: {...job.binding}, title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), analysis: structuredClone(analysis), ...matched};
-    latest = {result, input, analysis, binding: {...job.binding}, generation: job.generation};
+    const merged = {states: {}, warnings: []};
+    for (const value of results) {
+      const {states, warnings, ...items} = value;
+      Object.assign(merged, items); Object.assign(merged.states, states); merged.warnings.push(...warnings);
+    }
+    return merged;
+  }
+
+  /** 完成后只返回可检查建议；应用必须由界面显式决定，并先调用 isCurrent。 */
+  function finish(input, analysis, matched, job, updatedScopes = ['music', 'activity']) {
+    check(job);
+    const result = {...matched, id: uuid(), binding: {...job.binding}, title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), analysis: structuredClone(analysis), states: {copy: 'ready', ...matched.states}};
+    // 只更新本次实际生成的账号相关项；换一项不能顺带使另一项的旧账号候选重新有效。
+    const scopeBindings = {...latest?.scopeBindings};
+    for (const scope of updatedScopes) if (['music', 'activity'].includes(scope)) scopeBindings[scope] = {...job.binding};
+    latest = {result, input, analysis, binding: {...job.binding}, scopeBindings, generation: job.generation};
     return result;
   }
 
   return {
-    /** 分析仅发送用户显式选择的最多六个素材 ID，模型取图和提示词规则由本机服务管理。 */
+    /** 分析仅发送用户显式选择的最多六个素材 ID；资源偏好不改写共同作品背景。 */
     async generate(input, {signal, onProgress} = {}) {
-      const request = {baseURL: localBaseURL(input?.baseURL), prompt: typeof input?.prompt === 'string' ? input.prompt.trim() : '', context: typeof input?.context === 'string' ? input.context.trim() : '', assetIds: input?.assetIds ?? [], kind: input?.kind ?? 'image', dateTag: input?.dateTag ?? ''};
-      if (request.prompt.length > 8000 || request.context.length > 12000 || !['image', 'video'].includes(request.kind) || (typeof request.dateTag !== 'string' || request.dateTag !== '' && (!/^#\d{8}$/.test(request.dateTag) || dateTag(request.dateTag) !== request.dateTag)) || !Array.isArray(request.assetIds) || request.assetIds.length > 6 || request.assetIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128) || new Set(request.assetIds).size !== request.assetIds.length || (!request.assetIds.length && !request.context)) throw failure('AI_INVALID_REQUEST', '请提供作品信息或勾选最多六张图片，并检查提示词与输入长度。');
+      const request = {baseURL: localBaseURL(input?.baseURL), prompt: typeof input?.prompt === 'string' ? input.prompt.trim() : '', context: typeof input?.context === 'string' ? input.context.trim() : '', assetIds: input?.assetIds ?? [], kind: input?.kind ?? 'image', dateTag: input?.dateTag ?? '',
+        resourcePrompts: {music: typeof input?.resourcePrompts?.music === 'string' ? input.resourcePrompts.music.trim() : '', hotspot: typeof input?.resourcePrompts?.hotspot === 'string' ? input.resourcePrompts.hotspot.trim() : ''}};
+      if (request.prompt.length > 8000 || Object.values(request.resourcePrompts).some(value => value.length > 7800) || request.context.length > 12000 || !['image', 'video'].includes(request.kind) || (typeof request.dateTag !== 'string' || request.dateTag !== '' && (!/^#\d{8}$/.test(request.dateTag) || dateTag(request.dateTag) !== request.dateTag)) || !Array.isArray(request.assetIds) || request.assetIds.length > 6 || request.assetIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128) || new Set(request.assetIds).size !== request.assetIds.length || (!request.assetIds.length && !request.context)) throw failure('AI_INVALID_REQUEST', '请提供作品信息或勾选最多六张图片，并检查提示词与输入长度。');
       request.assetIds = [...request.assetIds];
       const job = begin(currentBinding(getCurrent), signal, onProgress);
       try {
         progress(job, 'analyze', request.assetIds.length ? `正在分析所选 ${request.assetIds.length} 张图片和作品信息…` : '正在分析当前文字信息…');
-        const raw = await ask(request.baseURL, {phase: 'analyze', prompt: request.prompt, context: request.context, assetIds: request.assetIds}, job);
-        const analysis = analyzeResult(raw, request.dateTag);
-        return finish(request, analysis, await resources(request, analysis, job), job);
+        const analysis = await analyze(request, job);
+        return finish(request, analysis, await recommend(request, analysis, job), job);
       } finally { if (active === job) active = null; }
     },
-    /** 仅重做资源查询与匹配；保留原文案，明确重试允许同一作品重新绑定新登录账号。 */
+    /** 只重试失败或账号来源已变化的资源；公共地点和热点建议不因换号重复生成。 */
     async retryResources(result, {signal, onProgress} = {}) {
       const record = latest, binding = currentBinding(getCurrent);
-      if (!record || record.result !== result || record.generation !== generation || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '作品内容已变化，请重新生成 AI 建议。');
+      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '作品内容已变化，请重新生成 AI 建议。');
+      const scopes = ['activity', 'music', 'location', 'hotspot'].filter(scope => !this.isCurrent(result, scope) || result.states[scope] === 'error');
+      if (!scopes.length) return result;
       const job = begin(binding, signal, onProgress);
-      try { return finish(record.input, record.analysis, await resources(record.input, record.analysis, job), job); }
-      finally { if (active === job) active = null; }
+      try {
+        const retried = await recommend(record.input, record.analysis, job, scopes);
+        const matched = {...result, ...retried, states: {...result.states, ...retried.states}, warnings: [...result.warnings.filter(item => !scopes.includes(item.scope) && item.scope !== 'resources'), ...retried.warnings]};
+        return finish(record.input, record.analysis, matched, job, scopes);
+      } finally { if (active === job) active = null; }
     },
-    /** 只有当前任务生成且内容/账号均未变化的结果可供界面应用，不自动覆盖任何手动选择。 */
-    isCurrent(result) {
-      try { return !disposed && !!latest && latest.result === result && latest.generation === generation && sameBinding(latest.binding, currentBinding(getCurrent)); } catch { return false; }
+    /** 用户明确重做一项时不触碰其他建议；单独提示词留空即恢复共同要求。 */
+    async regenerate(result, scope, {signal, onProgress, prompt} = {}) {
+      const record = latest, binding = currentBinding(getCurrent);
+      if (!['copy', 'activity', 'music', 'location', 'hotspot'].includes(scope)) throw failure('AI_INVALID_REQUEST', '请选择要重新生成的建议。');
+      if (!record || record.result !== result || !sameBinding(record.binding, binding, false)) throw failure('AI_STALE_RESULT', '作品素材已变化，请重新生成 AI 建议。');
+      const input = {...record.input, resourcePrompts: {...record.input.resourcePrompts}};
+      if (prompt !== undefined) {
+        if (!['music', 'hotspot'].includes(scope) || typeof prompt !== 'string' || prompt.length > 7800) throw failure('AI_INVALID_REQUEST', '单项提示词格式或长度不正确，请调整后重试。');
+        input.resourcePrompts[scope] = prompt.trim();
+      }
+      const job = begin(binding, signal, onProgress);
+      try {
+        let analysis = record.analysis, update;
+        if (scope === 'copy' || scope === 'music') {
+          progress(job, scope, scope === 'copy' ? '正在重新生成作品描述…' : '正在按音乐要求重新推荐…');
+          const generated = await analyze(input, job);
+          analysis = scope === 'copy' ? {...analysis, title: generated.title, description: generated.description, topics: generated.topics} : {...analysis, music: generated.music};
+        }
+        if (scope === 'copy') update = {title: analysis.title, description: analysis.description, topics: structuredClone(analysis.topics), states: {copy: 'ready'}, warnings: []};
+        else update = await recommend(input, analysis, job, [scope], result);
+        const merged = {...result, ...update, states: {...result.states, ...update.states}, warnings: [...result.warnings.filter(item => item.scope !== scope && item.scope !== 'resources'), ...update.warnings]};
+        return finish(input, analysis, merged, job, [scope]);
+      } finally { if (active === job) active = null; }
     },
-    /** 关闭或取消时撤销候选应用资格；忽略取消的模型或平台回执也不能重新激活结果。 */
+    /** 编辑建议文案只更新当前结果，保留对象身份和其他资源；允许用户明确清空。 */
+    editCopy(result, {title, description} = {}) {
+      if (!this.isCurrent(result)) throw failure('AI_STALE_RESULT', '作品素材已变化，请重新生成建议。');
+      if (typeof title !== 'string' || title.length > 20 || typeof description !== 'string' || description.length > 1000) throw failure('AI_INVALID_REQUEST', '标题最多 20 字，作品描述最多 1000 字。');
+      result.title = title; result.description = description;
+      latest.analysis = {...latest.analysis, title, description};
+      result.analysis = structuredClone(latest.analysis);
+      return result;
+    },
+    /** 公共建议只绑定作品和素材版本；音乐来源与活动资格按各自生成时的账号检查。 */
+    isCurrent(result, scope) {
+      try {
+        const binding = currentBinding(getCurrent);
+        return !disposed && !!latest && latest.result === result && sameBinding(latest.binding, binding, false) &&
+          (!['music', 'activity'].includes(scope) || !!latest.scopeBindings[scope] && sameBinding(latest.scopeBindings[scope], binding));
+      } catch { return false; }
+    },
+    /** 关闭面板只终止在途读取，已完成建议可在同一作品中继续查看。 */
+    cancelPending() { generation++; active?.controller.abort(); active = null; },
+    /** 切换作品或素材时撤销候选应用资格；迟到回执不能重新激活结果。 */
     cancel() { generation++; active?.controller.abort(); active = null; latest = null; },
     /** 释放该编辑器的所有在途读取和结果引用，不操作平台会话或本机作品。 */
     dispose() { this.cancel(); disposed = true; },

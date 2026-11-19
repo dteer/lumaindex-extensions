@@ -39,10 +39,11 @@ function sameResource(kind, left, right) {
 export function mountResourceControls({current, supports, safeURL, request, identity, cacheScope = identity, blocked, changed, selectCollection}) {
   const $ = id => document.getElementById(id);
   let contextKey = identity(), cachedScope = cacheScope(), active = null, timer = null, cityCode = '', cityName = '';
+  let cityDraftId = current().id; // 城市筛选属于作品编辑状态，换号不清除，切稿时才恢复。
   let cityPicker = null;
   const queryCache = new Map(); // 当前账号的合集分页和声明选项；只在内存保存，失败不缓存。
   let declarationItems = [], recommendationItems = [], recommendationKey = '', associationRange = null;
-  let recommendationController = null;
+  let recommendationController = null, recommendationPromise = null;
   const description = $('description');
   const clearButtons = new Map();
   // 清除只编辑本机草稿，独立于读取平台选项的账号状态。
@@ -166,6 +167,8 @@ export function mountResourceControls({current, supports, safeURL, request, iden
 
   // queryOptions 缓存账号内同一合集分页/声明；搜索仅筛选已读页面，换词不重复访问平台。
   async function queryOptions(operation, params, signal) {
+    // 推荐栏与空关键词下拉读取同一页；聚焦和点击添加话题不会重复请求。
+    if (operation === 'topics.search' && !params.query && params.cursor == null) return recommendations();
     if (!['collections.list', 'declarations.list'].includes(operation)) return request(operation, params, {signal});
     const scope = cacheScope();
     const key = `${scope}:${operation}:${params.cursor ?? 'first'}`;
@@ -310,16 +313,25 @@ export function mountResourceControls({current, supports, safeURL, request, iden
     description.setSelectionRange(start + prefix.length, start + prefix.length); changed(); suggest();
   }
 
-  // recommendations 按用户聚焦动作读取一次当前素材推荐；上传前不伪造推荐词。
-  async function recommendations() {
-    const key = identity() + ':' + current().assets.map(asset => asset.id).join(',');
-    if (!supports('topics.search') || recommendationKey === key) return;
+  // recommendations 共用当前作品素材的成功结果与在途请求；失败允许显式重试。
+  function recommendations() {
+    const owner = identity(), key = JSON.stringify([owner, current().kind, current().assets.map(asset => asset.id)]);
+    if (!supports('topics.search')) return Promise.resolve({items: []});
+    if (recommendationKey === key && recommendationPromise) return recommendationPromise;
     recommendationKey = key; recommendationController?.abort(); recommendationController = new AbortController();
-    try {
-      const result = await request('topics.search', {query: '', kind: current().kind, draftId: current().id}, {signal: recommendationController.signal});
-      if (recommendationKey !== key || !key.startsWith(identity() + ':')) return;
-      recommendationItems = Array.isArray(result.items) ? result.items : []; drawRecommendations();
-    } catch { if (recommendationKey === key) recommendationKey = ''; }
+    const controller = recommendationController;
+    const pending = request('topics.search', {query: '', kind: current().kind, draftId: current().id}, {signal: controller.signal}).then(result => {
+      if (!Array.isArray(result?.items)) throw Error('结果不完整，请重试。');
+      if (recommendationKey === key && identity() === owner && recommendationController === controller && !controller.signal.aborted) {
+        recommendationItems = result.items; drawRecommendations();
+      }
+      return result;
+    }).catch(error => {
+      if (recommendationPromise === pending) { recommendationKey = ''; recommendationPromise = null; }
+      throw error;
+    });
+    recommendationPromise = pending;
+    return pending;
   }
 
   // drawRecommendations 首行展示六项，其余经展开可选，推荐来源仅为平台响应。
@@ -339,8 +351,12 @@ export function mountResourceControls({current, supports, safeURL, request, iden
   function render() {
     if (cacheScope() !== cachedScope) { queryCache.clear(); cachedScope = cacheScope(); declarationItems = []; }
     if (identity() !== contextKey) {
-      close(); recommendationController?.abort(); recommendationKey = ''; recommendationItems = []; associationRange = null;
-      contextKey = identity(); cityCode = current().location?.cityCode || ''; cityName = current().location?.cityName || ''; drawRecommendations();
+      close(); recommendationController?.abort(); recommendationKey = ''; recommendationPromise = null; recommendationItems = []; associationRange = null;
+      contextKey = identity(); drawRecommendations();
+    }
+    if (cityDraftId !== current().id) {
+      cityDraftId = current().id;
+      cityCode = current().location?.cityCode || ''; cityName = current().location?.cityName || '';
     }
     $('collection-name').textContent = current().collection?.name || '不选择合集';
     $('location-name').textContent = current().location?.name || '输入相关位置';
@@ -366,7 +382,7 @@ export function mountResourceControls({current, supports, safeURL, request, iden
   }
   description.addEventListener('input', () => { synchronizeDescription(); suggest(); });
   description.addEventListener('click', suggest);
-  description.addEventListener('focus', () => { void recommendations(); });
+  description.addEventListener('focus', () => { void recommendations().catch(() => {}); });
   description.addEventListener('keydown', event => {
     if (event.key === 'Escape') close();
     if (event.key === 'ArrowDown' && ['topics', 'mentions'].includes(active?.kind)) { const first = active.list.querySelector('button:not(:disabled)'); if (first) { event.preventDefault(); first.focus(); } }
@@ -382,5 +398,5 @@ export function mountResourceControls({current, supports, safeURL, request, iden
       if (current().location?.cityCode !== cityCode) current().location = null;
       close(); changed(); if (cityCode) open('location');
     }});
-  return {render, close, synchronizeDescription, invalidateRecommendations: () => { recommendationKey = ''; }};
+  return {render, close, synchronizeDescription, invalidateRecommendations: () => { recommendationController?.abort(); recommendationKey = ''; recommendationPromise = null; }};
 }

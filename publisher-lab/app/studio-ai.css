@@ -1,30 +1,133 @@
-/* AI 采用发布页同样的白底、浅灰字段与紧凑表单，不改变抖音编辑页布局。 */
-.ai-dialog { width: min(650px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); overflow: auto; }
-.ai-dialog .field-label { margin: 16px 0 8px; }
-.ai-image-heading, .ai-prompt-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 8px; }
-.ai-check { display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 22px; }
-.ai-check input { accent-color: #161823; flex: 0 0 auto; }
-.ai-dialog .helper { margin: 6px 0; line-height: 20px; }
-.ai-images { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 2px; }
-.ai-images[hidden] { display: none; }
-.ai-image-card { min-width: 0; }
+/* 作品信息与建议在右栏一起滚动；折叠只收起输入，不影响生成任务。 */
+.ai-input-panel {
+  min-width: 0;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7f0;
+  border-radius: 10px;
+  background: #fff;
+}
+.ai-input-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 28px; padding: 0; border: 0; background: transparent; text-align: left; }
+.ai-input-toggle:hover:not(:disabled) { background: transparent; color: #4e70ed; }
+.ai-input-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+.ai-input-title svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ai-input-toggle[aria-expanded=false] svg { transform: rotate(-90deg); }
+#ai-input-toggle-label { color: #747681; font-size: 12px; }
+#ai-input-body { padding-top: 8px; }
+#ai-context { min-height: 64px; max-height: 160px; background: #f8f8fa; }
+.ai-input-options { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.ai-check { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; line-height: 22px; }
+.ai-check input { flex: 0 0 auto; margin: 0; accent-color: #5575f7; }
+.ai-input-options > .ai-check { flex: 0 0 100%; }
+.ai-generation-actions { display: flex; justify-content: flex-end; flex: 0 0 100%; gap: 8px; }
+.ai-input-panel .helper { margin: 6px 0 0; font-size: 11px; line-height: 18px; }
+.ai-image-heading, .ai-prompt-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 4px; }
+.ai-image-heading .helper { margin: 0; }
+.ai-image-heading button { min-height: 22px; padding: 0 3px; font-size: 11px; }
+#ai-image-section { flex: 0 0 100%; min-width: 0; }
+.ai-images { display: flex; gap: 8px; max-height: 104px; padding: 2px 2px 5px; overflow: auto; overscroll-behavior: contain; }
+.ai-image-card { flex: 0 0 64px; min-width: 0; }
 .ai-image-frame { position: relative; aspect-ratio: 1; border-radius: 5px; background: #f2f2f4; overflow: hidden; }
 .ai-image-frame img { width: 100%; height: 100%; object-fit: cover; }
+/* 素材勾选位于缩略图右下角，与文件名和查看图片动作独立。 */
 .ai-image-toggle { position: absolute; right: 2px; bottom: 2px; width: 28px; min-height: 28px; height: 28px; padding: 5px; border: none; background: none; border-radius: 50%; }
 .ai-image-toggle:hover { background: transparent; }
 .ai-image-circle { display: flex; align-items: center; justify-content: center; width: 17px; height: 17px; box-sizing: border-box; border: 1.5px solid #ffffff66; border-radius: 50%; background: #0000000f; font-size: 12px; font-weight: 400; line-height: 1; }
-.ai-image-toggle[aria-pressed="true"] .ai-image-circle { border-color: white; background: #1685ff; color: white; box-shadow: 0 0 0 1px #fff; }
+.ai-image-toggle[aria-pressed=true] .ai-image-circle { border-color: white; background: #1685ff; color: white; box-shadow: 0 0 0 1px #fff; }
 .ai-image-name { display: block; margin-top: 4px; font-size: 10px; color: #8b8c95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-dialog details { margin-top: 14px; }
-.ai-dialog summary { cursor: pointer; font-size: 13px; color: #747681; }
-.ai-dialog #ai-prompt { margin-top: 8px; font-size: 12px; line-height: 20px; }
-#ai-result { padding: 16px; background: #f7f7f9; }
-#ai-result .ai-result-copy { padding: 10px 0 14px 22px; }
-#ai-result p { margin: 5px 0; }
-#ai-result .ai-result-resource { padding: 12px 0; border-top: 1px solid #e8e8eb; }
+.ai-global-prompt { margin-top: 8px; }
+.ai-global-prompt summary { width: max-content; cursor: pointer; font-size: 11px; color: #747681; }
+.ai-global-prompt .ai-prompt-heading { margin-top: 8px; }
+.ai-global-prompt #ai-prompt { max-height: 140px; font-size: 12px; line-height: 20px; }
+.ai-global-prompt #ai-reset-prompt { min-height: 24px; padding: 1px 6px; font-size: 11px; }
+#ai-status:empty { display: none; }
+
+/* AI 建议独立滚动，标题与应用按钮固定在本栏边界。 */
+.ai-suggestions { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #fff; border: 1px solid #e9eaf0; border-radius: 10px; overflow: hidden; }
+.ai-suggestions-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px 12px; border-bottom: 1px solid #f0f0f4; }
+.ai-suggestions-heading > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; }
+.ai-suggestions-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.ai-suggestions-heading .helper { margin: 0; font-size: 11px; }
+#ai-close { min-height: 28px; padding: 1px 5px; border: 0; background: transparent; color: #999ba5; font-size: 24px; }
+.ai-suggestions-scroll { flex: 1 1 auto; min-height: 0; padding: 14px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-block: 14px; }
+.ai-empty { margin: 22px 8px; color: #92939b; font-size: 13px; line-height: 24px; }
+#ai-result { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; background: transparent; border-radius: 0; font-size: 13px; }
+.ai-suggestion-card { padding: 12px 14px; border: 1px solid #e3e6ef; border-radius: 8px; background: #fff; }
+.ai-card-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
+.ai-card-heading .ai-check { font-size: 14px; font-weight: 600; }
+.ai-card-actions { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.ai-card-actions button { min-height: 28px; padding: 2px 5px; font-size: 12px; }
+.ai-card-actions button.text-button, .ai-prompt-edit { color: #4e70ed; }
+.ai-prompt-edit { display: inline-flex; align-items: center; justify-content: center; width: 28px; border: 0; background: transparent; }
+.ai-prompt-edit svg { width: 17px; height: 17px; }
+.ai-prompt-edit[data-custom=true] { background: #edf1ff; border-radius: 5px; }
+#ai-result .ai-result-copy { margin: 6px 0 0 22px; }
+#ai-result .ai-result-copy strong { font-weight: 500; }
+#ai-result p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 21px; color: #777b89; }
+#ai-result-description { color: #424551 !important; }
 #ai-result .ai-result-resource > strong, #ai-result .ai-result-resource > p { display: block; margin-left: 22px; }
-#ai-result .ai-result-resource > strong { margin-top: 6px; font-size: 13px; font-weight: 500; }
-#ai-result-audio { width: calc(100% - 22px); height: 32px; margin: 8px 0 0 22px; }
-.ai-dialog .dialog-footer { position: sticky; bottom: -24px; padding: 12px 0; margin-top: 10px; background: white; flex-wrap: wrap; }
-#ai-cancel { margin-right: auto; }
-@media (max-width: 560px) { .ai-images { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+#ai-result .ai-result-resource > strong { margin-top: 6px; font-size: 13px; font-weight: 500; line-height: 21px; overflow-wrap: anywhere; }
+#ai-result .ai-item-status { color: #6376b5; font-size: 12px; }
+#ai-result .ai-item-status[data-error=true], #ai-warnings p { color: #b4434e; }
+#ai-result-audio { display: block; width: calc(100% - 22px); height: 32px; margin: 9px 0 0 22px; }
+#ai-retry-resources { display: block; margin: 14px auto 0; font-size: 12px; }
+.ai-suggestions-footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid #e9eaf0; background: #fff; }
+.ai-suggestions-footer strong { display: block; font-size: 13px; font-weight: 500; }
+.ai-suggestions-footer .helper { display: block; margin: 4px 0 0; font-size: 11px; line-height: 17px; }
+#ai-apply { min-width: 108px; }
+.ai-input-panel button.primary, .ai-suggestions button.primary, .ai-edit-dialog button.primary { background: #5575f7; border-color: #5575f7; }
+.ai-input-panel button.primary:hover:not(:disabled), .ai-suggestions button.primary:hover:not(:disabled), .ai-edit-dialog button.primary:hover:not(:disabled) { background: #4365e5; border-color: #4365e5; }
+.ai-edit-dialog { width: min(520px, calc(100vw - 40px)); }
+.ai-edit-dialog .field-label { display: block; margin: 14px 0 7px; font-size: 13px; }
+.ai-edit-dialog textarea { background: #f8f8fa; }
+.ai-edit-dialog .dialog-footer { margin-top: 18px; }
+.ai-edit-dialog .dialog-footer button { min-width: 72px; }
+
+/* 普通编辑显示发布预览；打开助手后由 AI 栏替换预览。 */
+body.ai-assistant-open .preview-column { display: none; }
+body.ai-assistant-open .studio-toolbar, body.ai-assistant-open .publisher-page { max-width: 1480px; }
+body.ai-assistant-open .workspace { grid-template-columns: minmax(0, 1.15fr) minmax(340px, 1fr); gap: 20px; }
+body.ai-assistant-open .official-card, body.ai-assistant-open .panel.official-card { padding-inline: 22px; }
+body.ai-assistant-open .content-panel, body.ai-assistant-open .cover-panel, body.ai-assistant-open .media-panel { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
+body.ai-assistant-open .content-panel > .section-heading, body.ai-assistant-open .content-panel .chips { grid-column: 1; }
+body.ai-assistant-open .content-panel > .section-heading { margin-bottom: 4px; }
+body.ai-assistant-open .subheading, body.ai-assistant-open .row-label { padding-top: 0; }
+body.ai-assistant-open .resource-row, body.ai-assistant-open .setting-row { grid-template-columns: 66px minmax(0, 1fr); column-gap: 12px; }
+body.ai-assistant-open .resource-row > label, body.ai-assistant-open .setting-label { font-size: 13px; }
+body.ai-assistant-open .resource-field { flex-wrap: wrap; }
+body.ai-assistant-open .cover-row { flex-wrap: wrap; }
+body.ai-assistant-open .cover-row .inline-actions { margin-left: auto; }
+body.ai-assistant-open .publish-actions { width: 100%; gap: 8px; }
+body.ai-assistant-open .publish-actions button { flex: 1; width: auto; padding-inline: 8px; font-size: 13px; }
+
+@media (min-width: 901px) {
+  .editor-column { overflow: hidden; }
+  .editor-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-block: 12px; }
+  .actionbar { flex: 0 0 auto; padding: 14px 0 0; margin-top: 0; border-top: 1px solid #e8e8ee; background: #f8f8fa; }
+  .ai-suggestions { height: 100%; }
+  body:has(dialog:modal) :is(.editor-scroll, .ai-suggestions-scroll) { overflow: hidden; }
+}
+@media (max-width: 1120px) and (min-width: 901px) {
+  body.ai-assistant-open .workspace { grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
+  body.ai-assistant-open .official-card, body.ai-assistant-open .panel.official-card { padding-inline: 16px; }
+  body.ai-assistant-open .resource-row, body.ai-assistant-open .setting-row { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
+  body.ai-assistant-open .radio-options label { font-size: 12px; padding-inline: 10px; }
+  body.ai-assistant-open #music-player { width: 100%; margin-left: 0; }
+}
+@media (max-width: 900px) {
+  body.ai-assistant-open .workspace { display: flex; flex-direction: column; gap: 20px; }
+  .ai-input-panel { padding: 16px; }
+  .ai-suggestions { order: -1; width: 100%; max-height: 70dvh; min-height: 220px; }
+  .ai-suggestions-scroll { min-height: 100px; }
+  .editor-column { width: 100%; }
+  body:has(dialog:modal) .ai-suggestions-scroll { overflow: hidden; }
+}
+@media (max-width: 560px) {
+  .ai-input-options > .ai-check { width: 100%; }
+  #ai-image-section { flex-basis: 100%; }
+  .ai-suggestions-heading, .ai-suggestions-footer { padding-inline: 14px; }
+  .ai-suggestions-scroll { padding: 10px; }
+  .ai-suggestion-card { padding: 10px; }
+  .ai-suggestions-footer .helper { max-width: 160px; }
+  body.ai-assistant-open .resource-row, body.ai-assistant-open .setting-row { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
+}

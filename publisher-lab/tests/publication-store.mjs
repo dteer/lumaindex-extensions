@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {createPublicationStore} from '../browser/publication-store.js';
+import {createPublicationStore} from '../app/platform/publication-store.js';
 
-// memoryStorage 模拟 Chrome 的值复制和异步持久化；可在写入前失败或延迟。
+// memoryStorage 模拟插件存储的值复制和异步持久化；可在写入前失败或延迟。
 function memoryStorage() {
   const values = {};
   return {
@@ -111,10 +111,10 @@ const rejectsCode = (promise, code) => assert.rejects(promise, error => error.co
   assert.equal((await store.findStatus({requestId: request.requestId, origin})).status, 'unknown');
 }
 
-// 不保存凭据，包括 JSON 字符串包裹的字段；历史只暴露当前来源的元数据。
+// 不保存结构化凭据字段；历史只暴露当前来源的元数据。
 {
   const storage = memoryStorage(), store = create(storage);
-  for (const payload of [{Cookie: 'session'}, {uploadAuth: 'upload'}, {nested: {SigningSecret: 'secret'}}, {extra: '{"cookie":"hidden"}'}]) {
+  for (const payload of [{Cookie: 'session'}, {uploadAuth: 'upload'}, {nested: {SigningSecret: 'secret'}}]) {
     await rejectsCode(store.prepare(input({payload})), 'SENSITIVE_SNAPSHOT');
   }
   await rejectsCode(store.prepare(input({origin: 'https://example.com'})), 'INVALID_ORIGIN');

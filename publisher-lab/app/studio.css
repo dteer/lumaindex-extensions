@@ -1,4 +1,4 @@
-/* 抖音创作者发布页：表单、选项条和预览使用同一套页面样式。 */
+/* 抖音创作者发布页：表单、选项条和资源选择使用同一套页面样式。 */
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 14px;
@@ -326,7 +326,7 @@ body[data-phase=upload] { background: #fff; }
 body[data-phase=upload] .studio-toolbar { background: #fff; }
 body[data-phase=upload] .studio-toolbar, body[data-phase=upload] .publisher-page { max-width: 1480px; }
 body[data-phase=upload] .workspace { display: block; }
-body[data-phase=upload] .editor-column, body[data-phase=upload] .preview-column { display: none; }
+body[data-phase=upload] .editor-column, body[data-phase=upload] .preview-column, body[data-phase=upload] .ai-suggestions { display: none; }
 body[data-phase=editing] .upload-landing, body[data-phase=editing] .publish-tabs { display: none; }
 .publish-tabs { border-bottom: 1px solid #ededf0; margin-bottom: 24px; }
 .publish-tabs > div { display: flex; align-items: stretch; gap: 32px; }
@@ -381,9 +381,6 @@ dialog::backdrop { background: #1618234d; }
 .confirmation-summary dd { margin: 0; color: #424551; overflow-wrap: anywhere; white-space: pre-wrap; }
 .confirm-check { display: flex; align-items: flex-start; gap: 5px; margin-top: 13px; font-size: 12px; line-height: 20px; color: #6b6e7b; }
 .confirm-check input { margin-top: 4px; flex-shrink: 0; }
-.ai-dialog { width: 530px; }
-#ai-result { margin-top: 14px; padding: 14px; background: #f8f8fa; border-radius: 4px; font-size: 13px; }
-#ai-result p { white-space: pre-wrap; line-height: 22px; color: #787b88; }
 .drafts-dialog { position: fixed; inset: 0 0 0 auto; margin: 0 0 0 auto; width: 340px; height: 100dvh; max-height: 100dvh; padding: 24px; border: 0; border-radius: 0; box-shadow: -12px 0 40px #16182314; }
 .drafts-dialog::backdrop { background: #16182333; }
 .draft-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; }

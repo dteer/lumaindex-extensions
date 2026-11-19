@@ -10,6 +10,13 @@ await mkdir(output, {recursive: true});
 let assetListRequests = 0;
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
+  if (url.pathname === '/api/v1/ai/publish-assist') {
+    const parts = []; for await (const part of request) parts.push(part);
+    const body = JSON.parse(Buffer.concat(parts));
+    assert.equal(body.phase, 'analyze');
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({code: 0, data: {title: '山野记录', description: '沿着山脊走走，记录周末的风景。', location: null, music: {queries: ['合成布局音乐'], style: '自然舒缓'}}})); return;
+  }
   if (url.pathname === '/api/v1/assets') {
     assetListRequests++;
     const video = url.searchParams.get('mediaClasses')?.includes('video');
@@ -45,70 +52,96 @@ try {
     await page.locator('#account-select-button').click();
     await page.locator(`#account-select-listbox [role=option][data-value="${profileId}"]`).click();
   }
-  // 桌面左右栏有独立滚动位置；重置截图视图时不能再只移动 window。
+  // 工具栏与操作栏固定，正文和 AI 建议分别在自己的滚动容器内移动。
   async function resetWorkspaceScroll() {
-    await page.evaluate(() => { scrollTo(0, 0); for (const node of document.querySelectorAll('.editor-column, .preview-column')) node.scrollTop = 0; });
+    await page.evaluate(() => { scrollTo(0, 0); for (const node of document.querySelectorAll('.editor-scroll, .ai-suggestions-scroll, .preview-column')) node.scrollTop = 0; });
   }
-  // 使用 Chrome 真实 wheel 输入验证网页布局边界；不等同于 macOS 触控板的系统惯性/橡皮筋效果。
+  // 真实 wheel 验证布局，不替代 macOS 触控板的系统惯性/橡皮筋测试。
   async function verifyWorkspaceScroll() {
     await page.setViewportSize({width: 1290, height: 700}); await resetWorkspaceScroll(); await page.locator('#description').focus();
     const snapshot = () => page.evaluate(() => {
       const rect = selector => { const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect(); return {x, y, width, height}; };
-      return {toolbar: rect('.studio-toolbar'), preview: rect('.preview-column'), height: document.querySelector('.editor-column').scrollHeight,
-        documentHeight: document.documentElement.scrollHeight, bodyY: scrollY, rightY: document.querySelector('.preview-column').scrollTop};
+      return {toolbar: rect('.studio-toolbar'), footer: rect('.actionbar'), height: document.querySelector('.editor-scroll').scrollHeight,
+        documentHeight: document.documentElement.scrollHeight, bodyY: scrollY};
     });
     const before = await snapshot(), input = await page.locator('#description').boundingBox();
     await page.mouse.move(input.x + 20, input.y + 20); await page.mouse.wheel(0, 10000);
-    await page.waitForFunction(() => { const node = document.querySelector('.editor-column'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
-    const bottom = await page.locator('.editor-column').evaluate(node => node.scrollTop);
+    await page.waitForFunction(() => { const node = document.querySelector('.editor-scroll'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
+    const bottom = await page.locator('.editor-scroll').evaluate(node => node.scrollTop);
     for (let i = 0; i < 3; i++) await page.mouse.wheel(0, 900);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await page.locator('.editor-column').evaluate(node => node.scrollTop), bottom, 'continued downward wheel must remain at the editor bottom');
-    assert.deepEqual(await snapshot(), before, 'scrolling the focused editor must not move toolbar/preview or change content/page height');
+    assert.equal(await page.locator('.editor-scroll').evaluate(node => node.scrollTop), bottom, 'continued downward wheel remains at editor bottom');
+    assert.deepEqual(await snapshot(), before, 'editor scrolling does not move toolbar/footer or page boundaries');
+    const capability = await page.locator('.capability-panel summary').boundingBox(), editor = await page.locator('.editor-scroll').boundingBox();
+    assert.ok(capability.y >= editor.y && capability.y + capability.height <= editor.y + editor.height + 1, 'capabilities remain reachable in the editor while preview is separate');
     await page.screenshot({path: output + 'studio-fixed-workspace-bottom.png'});
-    await page.mouse.wheel(0, -350); await page.waitForFunction(previous => document.querySelector('.editor-column').scrollTop < previous, bottom);
-    assert.deepEqual(await snapshot(), before, 'upward editor scrolling must preserve fixed layout and independent preview position');
-    await page.setViewportSize({width: 1290, height: 520});
-    const preview = await page.locator('.preview-column').boundingBox();
-    // 手机画面本身处理翻图滚轮；从预览标题区域验证右栏自身滚动。
-    await page.mouse.move(preview.x + 15, preview.y + 8); await page.mouse.wheel(0, 10000);
-    await page.waitForFunction(() => { const node = document.querySelector('.preview-column'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
-    const capability = await page.locator('.capability-panel summary').boundingBox();
-    assert.ok(capability.y >= preview.y && capability.y + capability.height <= preview.y + preview.height + 1, 'short desktop viewport must keep bottom preview capabilities reachable by its own scroll');
+    await page.mouse.wheel(0, -350); await page.waitForFunction(previous => document.querySelector('.editor-scroll').scrollTop < previous, bottom);
+    assert.deepEqual(await snapshot(), before, 'upward editor scrolling keeps the toolbar and footer fixed');
+
+    await resetWorkspaceScroll(); await page.locator('#open-ai').click();
+    await page.locator('#ai-context').fill('惠州大南山，周末徒步，自然记录。');
+    await page.locator('#ai-generate').click();
+    await page.waitForFunction(() => !document.querySelector('#ai-result').hidden && !document.querySelector('#ai-apply').disabled);
+    const aiGeometry = () => page.evaluate(() => {
+      const rect = selector => { const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect(); return {x, y, width, height}; };
+      return {left: rect('.editor-column'), right: rect('#ai-suggestions'), heading: rect('.ai-suggestions-heading'), footer: rect('.ai-suggestions-footer'), toolbar: rect('.studio-toolbar'), leftFooter: rect('.actionbar'), bodyY: scrollY};
+    });
+    await resetWorkspaceScroll();
+    const columns = await aiGeometry(), workInput = await page.locator('#ai-dialog').boundingBox();
+    assert.equal(columns.left.y, columns.right.y, 'editor and AI columns start together');
+    assert.ok(workInput.x >= columns.right.x && workInput.x + workInput.width <= columns.right.x + columns.right.width, 'work information is contained in the AI column');
+    assert.equal(await page.locator('.ai-suggestions-scroll').evaluate(node => node.firstElementChild.id), 'ai-dialog');
+    assert.equal(await page.locator('#ai-dialog').evaluate(node => node.tagName), 'SECTION');
+    assert.equal(await page.locator('#douyin-preview').count(), 1, 'AI replaces the visible preview without deleting its container');
+    assert.equal(await page.locator('.preview-column').isHidden(), true, 'publishing preview is hidden while AI is open');
+    await page.setViewportSize({width: 1290, height: 520}); await resetWorkspaceScroll();
+    const pinned = await aiGeometry(), inputTop = (await page.locator('#ai-dialog').boundingBox()).y, right = await page.locator('.ai-suggestions-scroll').boundingBox();
+    await page.mouse.move(right.x + 6, right.y + 20); await page.mouse.wheel(0, 10000);
+    await page.waitForFunction(() => { const node = document.querySelector('.ai-suggestions-scroll'); return node.scrollTop > 0 && node.scrollTop >= node.scrollHeight - node.clientHeight - 1; });
+    assert.equal(await page.locator('.editor-scroll').evaluate(node => node.scrollTop), 0, 'scrolling suggestions does not move the work form');
+    assert.ok((await page.locator('#ai-dialog').boundingBox()).y < inputTop, 'work information scrolls out with the AI suggestions');
+    assert.deepEqual(await aiGeometry(), pinned, 'column headings and action bars stay fixed while input and suggestions scroll');
+    const rightY = await page.locator('.ai-suggestions-scroll').evaluate(node => node.scrollTop), left = await page.locator('.editor-scroll').boundingBox();
+    await page.mouse.move(left.x + 15, left.y + 20); await page.mouse.wheel(0, 10000);
+    await page.waitForFunction(() => document.querySelector('.editor-scroll').scrollTop > 0);
+    assert.equal(await page.locator('.ai-suggestions-scroll').evaluate(node => node.scrollTop), rightY, 'scrolling the work form preserves suggestion scroll position');
+    assert.deepEqual(await aiGeometry(), pinned);
     await page.screenshot({path: output + 'studio-fixed-workspace-short.png'});
+    await page.locator('#ai-close').click();
+    assert.equal(await page.locator('.preview-column').isVisible(), true, 'closing AI restores the publishing preview');
+    assert.equal(await page.locator('.studio-phone-title').textContent(), await page.locator('#title').inputValue());
     await page.setViewportSize({width: 560, height: 700}); await resetWorkspaceScroll();
-    assert.equal(await page.locator('.preview-column').isVisible(), false);
+    assert.equal(await page.locator('#ai-suggestions').isVisible(), false);
+    assert.equal(await page.locator('.preview-column').isVisible(), false, 'narrow layout retains responsive preview hiding');
     await page.mouse.move(40, 300); await page.mouse.wheel(0, 450); await page.waitForFunction(() => scrollY > 0);
     assert.equal((await page.locator('.studio-toolbar').boundingBox()).y, 0, 'narrow layout keeps natural page scrolling with a pinned toolbar');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.setViewportSize({width: 1290, height: 900}); await resetWorkspaceScroll();
   }
-  // 检查实际编辑首屏的比例，避免功能通过但又堆出多层标题或大块空白。
+  // 普通编辑恢复右侧发布预览，表单保持紧凑，窄屏依旧优先编辑。
   async function inspectEditorLayout(width, screenshot) {
     await page.setViewportSize({width, height: 900});
     await resetWorkspaceScroll();
     const metrics = await page.evaluate(() => {
       const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width, height: r.height}; };
-      const preview = document.querySelector('.preview-column'), style = getComputedStyle(preview), bounds = preview.getBoundingClientRect();
-      return {card: rect('.basic-card'), preview: rect('.preview-column'), phone: rect('.studio-phone'), description: rect('.description-editor'), cover: rect('.cover-row'),
-        previewCenter: bounds.x + parseFloat(style.paddingLeft) + (preview.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / 2,
+      return {card: rect('.basic-card'), preview: rect('.preview-column'), phone: rect('.studio-phone'), description: rect('.description-editor'), cover: rect('.cover-row'), footer: rect('.actionbar'),
         overflow: document.documentElement.scrollWidth > innerWidth,
-        previewVisible: getComputedStyle(document.querySelector('.preview-column')).display !== 'none',
         tabsVisible: getComputedStyle(document.querySelector('.publish-tabs')).display !== 'none',
         successBannerVisible: !document.querySelector('#connection-banner').hidden};
     });
     assert.equal(metrics.overflow, false, `editor must not overflow at ${width}px`);
     assert.equal(metrics.tabsVisible, false, 'editing starts with the form, not upload tabs');
     assert.equal(metrics.successBannerVisible, false, 'verified account does not leave a persistent banner');
+    assert.equal(await page.locator('#douyin-preview').count(), 1);
+    assert.equal(await page.locator('.preview-column').isVisible(), width > 900, 'normal desktop editing shows the publishing preview');
     if (width >= 1200) {
       assert.ok(metrics.card.y >= 40 && metrics.card.y <= 100, `form starts near the compact toolbar: ${JSON.stringify(metrics)}`);
-      assert.ok(metrics.card.width > metrics.preview.width * 1.5 && metrics.description.width > metrics.card.width * 0.6, 'wide layout keeps a readable primary editing column');
-      assert.equal(metrics.previewVisible, true);
-      assert.ok(metrics.preview.width > metrics.phone.width, 'wide side column leaves reading space beyond the centered phone');
-      assert.ok(Math.abs(metrics.phone.x + metrics.phone.width / 2 - metrics.previewCenter) <= 1, 'phone stays centered inside the usable preview width, clear of its scrollbar');
-      assert.ok(Math.abs(metrics.preview.y - metrics.card.y) <= 5, 'preview aligns with the first card');
+      assert.ok(metrics.card.width > metrics.preview.width * 1.5 && metrics.description.width > metrics.card.width * 0.6, 'editor keeps readable space beside the restored preview');
+      assert.ok(metrics.preview.x >= metrics.card.x + metrics.card.width, 'preview stays in the right column');
+      assert.ok(metrics.phone.width > 0 && metrics.phone.width <= metrics.preview.width, 'phone fits within its side column');
       assert.ok(metrics.description.height >= 140 && metrics.description.height <= 200, 'description stays compact');
       assert.ok(metrics.cover.height <= 100, 'cover is a compact horizontal field');
+      assert.ok(metrics.footer.y + metrics.footer.height <= 900, 'publishing actions remain within the viewport');
     }
     await page.screenshot({path: output + screenshot});
     return metrics;
@@ -164,6 +197,10 @@ try {
         const url = new URL(message.url); let data;
         if (url.pathname === '/web/api/media/user/info/') data = {status_code: 0, user: {uid: active.identity.id, nickname: active.identity.name}};
         else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: [{cid: '222', cha_name: '测试摄影话题'}]};
+        else if (url.pathname === '/web/api/media/activity/get/') data = {status_code: 0, activity_list: []};
+        else if (url.pathname === '/aweme/v1/hotspot/recommend/') data = {status_code: 0, all_sentences: [], rec_sentences: []};
+        else if (url.pathname === '/web/api/media/aweme/search/post/auth') data = {status_code: 0, signature: 'synthetic-layout-auth'};
+        else if (url.hostname === 'tsearch.amemv.com' && url.pathname === '/openapi/aweme/v1/music/search/') data = {status_code: 0, music: [], has_more: 0};
         else throw Error('Unexpected platform operation');
         const response = {ok: true, data: {status: 200, headers: {'content-type': 'application/json'}, body: JSON.stringify(data)}};
         if (window.__nativeTest.holdAccount && url.pathname === '/web/api/media/user/info/') return new Promise(resolve => { window.__nativeTest.finishAccount = () => resolve(response); });
@@ -393,6 +430,7 @@ try {
   assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image', 'fixture-image-2', 'fixture-image-3']);
   // 排序写入实际草稿，保持封面和预览素材身份；保存失败不丢弃当前编辑，单独重试即可。
   const sortCover = (await savedDraft()).cover;
+  const sortPreviewImage = await page.locator('.studio-phone-stage .is-current img').getAttribute('alt');
   const alerts = []; page.on('dialog', async dialog => { alerts.push(dialog.message()); await dialog.accept(); });
   const photo = name => page.getByRole('button', {name: '查看图片：' + name, exact: true});
   const visibleOrder = () => page.locator('.studio-gallery-card').evaluateAll(cards => cards.map(card => card.dataset.assetId));
@@ -400,8 +438,9 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts.find(item => item.id === window.__nativeTest.state.activeDraftId).assets.at(-1).id === 'fixture-image');
   assert.deepEqual((await savedDraft()).assets.map(item => item.id), ['fixture-image-2', 'fixture-image-3', 'fixture-image']);
   assert.deepEqual((await savedDraft()).cover, sortCover, 'reordering does not replace the selected cover or its crop');
-  assert.equal(await page.locator('.studio-phone-stage .is-current img').getAttribute('alt'), '界面测试图片3.jpg');
-  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab', {selected: true}).getAttribute('aria-label'), '查看第 2 张，共 3 张');
+  assert.equal(await page.locator('.studio-phone').count(), 1);
+  assert.equal(await page.locator('.studio-phone-stage .is-current img').getAttribute('alt'), sortPreviewImage, 'sorting preserves the identity of the focused preview image');
+  assert.equal(await page.locator('.studio-phone-segment').count(), 3);
   assert.equal(await page.locator('.studio-gallery-lightbox').evaluate(el => el.open), false);
   // 移除按钮不是拖动手柄；从该按钮发起拖动不能取得图片的排序资格。
   const removalDrag = await page.evaluateHandle(() => new DataTransfer());
@@ -434,8 +473,7 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 2);
   assert.equal(await page.locator('.studio-gallery-lightbox').evaluate(el => el.open), false, 'remove does not open preview');
   assert.equal((await savedDraft()).cover.assetId, 'fixture-image-3', 'removing another image preserves cover');
-  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab').count(), 2);
-  assert.equal(await page.getByRole('tablist', {name: '图片浏览进度'}).getByRole('tab', {selected: true}).getAttribute('aria-label'), '查看第 2 张，共 2 张');
+  assert.equal(await page.locator('.studio-gallery-card').count(), 2, 'material gallery continues to reflect image removal');
   await page.evaluate(() => { window.__nativeTest.failPersist = true; });
   await page.getByRole('button', {name: '移除图片：界面测试图片3.jpg', exact: true}).click();
   await page.waitForFunction(() => !document.body.classList.contains('busy') && document.querySelectorAll('.studio-gallery-image').length === 1);
@@ -455,7 +493,7 @@ try {
   await page.locator('#choose-cover').click();
   await page.waitForFunction(() => !document.body.classList.contains('busy') && window.__nativeTest.state.drafts.find(item => item.id === window.__nativeTest.state.activeDraftId).cover?.assetId === 'fixture-image');
   assert.equal((await savedDraft()).assets.length, 0, 'selecting a cover for an empty body never inserts it into body images');
-  assert.equal(await page.locator('.studio-phone-progress').isHidden(), true);
+  assert.equal(await page.locator('.studio-phone-progress').isHidden(), true, 'empty body has no image progress');
   assert.equal((await savedDraft()).title, '原生会话界面测试', 'removing all pictures preserves the copy');
   assert.equal(await page.locator('#search-dialog').isVisible(), false);
   assert.equal(await page.evaluate(() => window.__nativeTest.messages.some(x => JSON.stringify(x).includes('chrome-extension://'))), false);

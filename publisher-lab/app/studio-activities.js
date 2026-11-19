@@ -146,9 +146,13 @@ export function mountActivities({container, current, identity, cacheScope = iden
     }
   }
 
+  /** 外部编辑只有改变活动选择、按钮权限或添加任务时，才需要重画卡片。 */
+  function renderInputs() { return JSON.stringify([current().activities || [], blocked(), supports('activities.resolve'), selectionTask?.id]); }
+
   /** 按当前选中状态画单行横向卡片，图片和平台链接缺失时不生成虚构补位信息。 */
   function draw(view) {
     if (!owns(view)) return;
+    view.renderedInputs = renderInputs();
     const offset = list.scrollLeft;
     const focusedID = document.activeElement?.closest('.studio-activity-card')?.dataset.activityId;
     const focusedClass = document.activeElement?.classList.contains('studio-activity-details') ? '.studio-activity-details' : '.studio-activity-add';
@@ -297,7 +301,7 @@ export function mountActivities({container, current, identity, cacheScope = iden
         items: [], cursor: null, hasMore: false, loaded: false, loading: false, refreshing: false, failedRefresh: false, error: '', message: ''};
       list.scrollLeft = 0;
     }
-    draw(state);
+    if (state.renderedInputs !== renderInputs()) draw(state);
     if (!state.loaded && !state.loading && !state.error) void load(state);
     else schedulePreload();
   }

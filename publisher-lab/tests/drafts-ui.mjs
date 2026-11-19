@@ -136,6 +136,7 @@ try {
   await remove(page,'a');await page.locator('#confirm-submit').click();
   await page.waitForFunction(() => fixture.state.activeDraftId==='d');await settle(page);
   assert.equal(await page.locator('#description').inputValue(),original.drafts[3].description);
+  assert.equal(await row(page,'d').locator('.draft-item').getAttribute('aria-current'),'true');
   assert.equal(await page.locator('#publish').isDisabled(),true);
   await page.evaluate(() => {fixture.failPersist=true;});
   await remove(page,'d');await page.locator('#confirm-submit').click();
@@ -152,10 +153,12 @@ try {
   await busy.locator('#prepare').click();await busy.waitForFunction(()=>!!fixture.pending['publication.prepare']);
   assert.equal(await busy.locator('#delete-draft').isDisabled(),true);
   assert.equal(await busy.locator('.draft-delete:disabled').count(),4);
+  assert.equal(await busy.locator('.draft-item:disabled').count(),4, 'preparation locks existing draft buttons without rebuilding rows');
   await row(busy,'b').locator('.draft-delete').evaluate(button=>button.click());
   assert.equal(await busy.locator('#confirm-dialog').isVisible(),false);
   await busy.evaluate(()=>fixture.pending['publication.prepare'].resolve({preparationId:'synthetic-preparation',canPublish:true,account:fixture.session.account}));
   await busy.waitForFunction(()=>!document.body.classList.contains('busy'));
+  assert.equal(await busy.locator('.draft-item:disabled').count(),0, 'draft buttons unlock after preparation');
   await busy.locator('#publish').click();await busy.locator('#confirm-content input[type=checkbox]').check();await busy.locator('#confirm-submit').click();
   await busy.waitForFunction(()=>!!fixture.pending['publication.publish']);
   assert.equal(await busy.locator('.draft-delete:disabled').count(),4);

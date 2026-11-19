@@ -16,9 +16,10 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/v1/ai/publish-assist') {
     const parts = []; for await (const part of request) parts.push(part);
     const body = JSON.parse(Buffer.concat(parts)); aiCalls.push(body);
-    assert.equal(body.phase, 'analyze', 'empty real resource candidates do not require a second model request');
+    assert.ok(['analyze', 'select'].includes(body.phase));
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({code: 0, data: {title: '一段新的记录', description: '用新的文字记下这个下午。', location: null, music: {queries: ['合成音乐搜索'], style: '轻柔'}}})); return;
+    const data = body.phase === 'select' ? {choice: null} : {title: '一段新的记录', description: '用新的文字记下这个下午。', location: null, music: {queries: ['合成音乐搜索'], style: '轻柔'}};
+    response.end(JSON.stringify({code: 0, data})); return;
   }
   if (url.pathname.startsWith('/api/v1/assets/activity-image/')) { response.setHeader('Content-Type', 'image/svg+xml'); response.end(picture); return; }
   if (url.pathname === '/api/v1/assets/activity-image') {
@@ -65,6 +66,7 @@ try {
       else if (url.pathname === '/aweme/v3/user_declaration/suggestion/') data = {status_code: 0, data: {block_type: 0, options: []}};
       else if (url.pathname === '/web/api/media/aweme/search/post/auth') data = {status_code: 0, signature: 'synthetic-activity-ai-grant'};
       else if (url.origin === 'https://tsearch.amemv.com' && url.pathname === '/openapi/aweme/v1/music/search/') data = {status_code: 0, music: [], has_more: 0};
+      else if (url.pathname === '/aweme/v1/hotspot/recommend/') data = {status_code: 0, all_sentences: [], rec_sentences: []};
       else if (url.pathname === '/aweme/v1/search/challengesug/') data = {status_code: 0, sug_list: []};
       else throw Error('Unexpected platform request: ' + url.pathname);
       return {ok: true, data: {status: 200, headers: {'content-type': 'application/json'}, body: JSON.stringify(data)}};
@@ -96,6 +98,15 @@ try {
   await page.waitForFunction(() => window.__activityUI.state.drafts[0].activities.length === 1);
   await expectDescription(joined, ['7001', '7655295256916658211']);
   assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+  // 标题、普通正文输入只更新摘要和预览，草稿行与无变化的活动卡片保持原节点。
+  await page.evaluate(() => { window.stableDraftRow = document.querySelector('.draft-row'); window.stableActivityCard = document.querySelector('[data-activity-id="101"]'); });
+  const titleBefore = await page.locator('#title').inputValue();
+  await page.locator('#title').fill('改过的标题');
+  await page.locator('#description').fill(joined + ' 补充说明');
+  assert.equal(await page.locator('#description-count').textContent(), `${(joined + ' 补充说明').length} / 1000`);
+  assert.deepEqual(await page.evaluate(() => ({draft: stableDraftRow === document.querySelector('.draft-row'), activity: stableActivityCard === document.querySelector('[data-activity-id="101"]')})), {draft:true,activity:true});
+  await page.locator('#description').fill(joined);
+  await page.locator('#title').fill(titleBefore);
   assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].activities), [{id: '101', name: '官方摄影活动', topic: {id: '7655295256916658211', name: '活动摄影话题'}}]);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__activityUI.state).includes('7655295256916658000')), false, 'rounded list ID never enters draft state');
   await page.screenshot({path: output + 'studio-activity-integrated-topic.png'});
@@ -118,7 +129,7 @@ try {
   await expectDescription(original, ['7001']);
   assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
 
-  // 刷新恢复活动与话题身份，AI 替换正文则清除不再可见的关联，不留下隐式参加状态。
+  // 刷新恢复活动与话题身份；只采纳 AI 文案时，未勾选的手选活动及其可见话题继续保留。
   await page.keyboard.press('Escape');
   await card.hover(); await toggle.click();
   await page.waitForFunction(() => window.__activityUI.state.drafts[0].activities.length === 1);
@@ -127,17 +138,22 @@ try {
   assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
   await page.locator('#open-ai').click(); await page.locator('#ai-generate').click();
   await page.waitForFunction(() => !document.querySelector('#ai-result').hidden && !document.querySelector('#ai-apply').disabled);
-  await page.locator('#ai-apply').click(); await page.locator('#confirm-dialog[open]').waitFor(); await page.locator('#confirm-submit').click();
-  await page.waitForFunction(() => !document.querySelector('#ai-dialog').open && window.__activityUI.state.drafts[0].title === '一段新的记录');
+  assert.equal(await page.locator('#ai-apply-activity').isChecked(), false, 'manually chosen activity is not replaced by a no-activity recommendation');
+  const beforeApplyRequests = await page.evaluate(() => window.__activityUI.requests.length);
+  await page.locator('#ai-apply').click();
+  await page.waitForFunction(() => window.__activityUI.state.drafts[0].title === '一段新的记录');
+  assert.equal(await page.locator('#confirm-dialog').evaluate(node => node.open), false, 'explicitly selecting AI suggestions does not open another confirmation');
   const replacement = await page.locator('#description').inputValue();
-  assert.equal(replacement, '#有序图库\n用新的文字记下这个下午。', 'missing capture metadata and an undated directory keep the brand without inventing a photo date');
-  await expectDescription(replacement, ['0']);
-  assert.deepEqual(await page.locator('.studio-description-entity').allTextContents(), ['#有序图库'], 'the new brand stays highlighted after old topic and activity tokens are replaced');
-  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].activities), []);
-  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}]);
-  assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
-  assert.equal(aiCalls.length, 1);
+  assert.equal(replacement, '#有序图库\n用新的文字记下这个下午。\n#活动摄影话题', 'copy replacement preserves the unselected activity and its visible topic without inventing a photo date');
+  await expectDescription(replacement, ['0', '7655295256916658211']);
+  assert.deepEqual(await page.locator('.studio-description-entity').allTextContents(), ['#有序图库', '#活动摄影话题']);
+  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].activities), [{id: '101', name: '官方摄影活动', topic: {id: '7655295256916658211', name: '活动摄影话题'}}]);
+  assert.deepEqual(await page.evaluate(() => window.__activityUI.state.drafts[0].topics), [{id: '0', name: '有序图库'}, {id: '7655295256916658211', name: '活动摄影话题'}]);
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.evaluate(() => window.__activityUI.requests.length), beforeApplyRequests, 'applying prepared suggestions does not recheck the account or resolve activities again');
+  assert.equal(aiCalls.filter(call => call.phase === 'analyze').length, 1);
+  assert.equal(aiCalls.filter(call => call.phase === 'select').length, 1, 'actual activity candidates are evaluated independently of copy');
   assert.equal(await page.evaluate(() => window.__activityUI.requests.some(item => item.method !== 'GET' || /upload|create_v2/.test(item.url))), false);
   assert.deepEqual(alerts, []); assert.deepEqual(errors, []);
-  console.log('activity integration UI: real API fields, blue topic highlight, UTF-16 count, selection persistence, token removal, AI replacement and ordinary-topic preservation passed');
+  console.log('activity integration UI: real API fields, blue topic highlight, UTF-16 count, selection persistence, token removal, AI copy replacement preserves unselected activities and ordinary-topic removal passed');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

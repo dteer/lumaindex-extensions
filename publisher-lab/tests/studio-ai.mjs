@@ -64,7 +64,7 @@ function harness() {
   const input = {baseURL: 'http://127.0.0.1:8765/api/v1', prompt: '合成提示词', context: '合成背景', assetIds: ['asset-1', 'asset-2'], kind: 'image', dateTag: '#20261117'};
   const analysis = {title: '湖边的午后', description: '沿着湖边慢慢走。\n#20200101\n#20200101', location: {cityName: '杭州', query: '西湖', evidence: '作品背景给出杭州，画面有湖景'}, music: {queries: ['轻音乐', '钢琴'], style: '舒缓'} };
   const state = {
-    analysis, aiRequests: [], queries: [], cities: [{code: '330100', name: '杭州市'}, {code: '110100', name: '北京市'}],
+    analysis, aiRequests: [], queries: [], activities: [], hotspots: [], cities: [{code: '330100', name: '杭州市'}, {code: '110100', name: '北京市'}],
     locations: [{id: '101', name: '合成西湖候选', address: '合成地址', cityCode: '330100', cityName: '杭州市'}],
     music: [{id: '201', name: '合成轻音乐', description: '合成作者', duration: 120, thumbnailURL: 'https://media.example.test/cover.jpg', previewURL: 'https://media.example.test/song.mp3'}],
   };
@@ -77,18 +77,19 @@ function harness() {
       const request = JSON.parse(options.body); state.aiRequests.push(request);
       await state.onAI?.(request, options);
       if (state.failAI === request.phase) return new Response(JSON.stringify({code: 10001, message: '合成模型请求失败'}), {status: 400});
-      const data = request.phase === 'analyze' ? state.analysis : state.match || {
+      const data = request.phase === 'analyze' ? state.analysis : request.phase === 'select' ? (state.selection || {choice: request.options[0] ? {id: request.options[0].id, reason: '与作品内容直接相关'} : null}) : state.match || {
         location: request.candidates.locations[0] ? {id: request.candidates.locations[0].id, reason: '与作品线索一致'} : null,
         music: request.candidates.music[0] ? {id: request.candidates.music[0].id, reason: '节奏符合当前画面和文案'} : null,
       };
       return new Response(JSON.stringify({code: 0, data}));
     },
     client: {async request(operation, params, options) {
-      assert.ok(['locations.search', 'music.search'].includes(operation), 'orchestrator must never call uploads or publication');
+      assert.ok(['locations.search', 'music.search', 'activities.list', 'activities.resolve', 'hotspots.search'].includes(operation), 'orchestrator must never call uploads or publication');
       state.queries.push({operation, params, signal: options.signal});
       await state.onQuery?.(operation, params, options);
       if (state.failQuery === operation) throw Error('合成平台查询失败');
-      return {items: structuredClone(operation === 'locations.search' ? state.locations : state.music), nextCursor: '20'};
+      if (operation === 'activities.resolve') return state.resolvedActivity || {...state.activities.find(item => item.id === params.id), topic: {id: '777', name: '徒步日记'}};
+      return {items: structuredClone(operation === 'locations.search' ? state.locations : operation === 'music.search' ? state.music : operation === 'activities.list' ? state.activities : state.hotspots), nextCursor: '20'};
     }},
   });
   return {ai, state, input, binding};
@@ -125,7 +126,8 @@ function harness() {
   assert.ok(offline.warnings.some(item => item.code === 'AI_ACCOUNT_REQUIRED'));
   assert.equal(h.state.aiRequests.length, 1); assert.equal(h.state.queries.length, 0);
   h.binding.accountId = '456'; h.binding.profileId = 'profile-two';
-  assert.equal(h.ai.isCurrent(offline), false);
+  assert.equal(h.ai.isCurrent(offline), true, '登录后已有文案仍可使用');
+  assert.equal(h.ai.isCurrent(offline, 'music'), false);
   const matched = await h.ai.retryResources(offline);
   assert.equal(matched.description, offline.description); assert.equal(matched.music.id, '201');
   assert.equal(matched.binding.accountId, '456'); assert.equal(h.ai.isCurrent(matched), true);
@@ -165,7 +167,8 @@ for (const failAfterFirstCandidate of [false, true]) {
   assert.equal(musicQueries, failAfterFirstCandidate ? 2 : 1, 'account errors must not trigger another keyword request');
   assert.equal(h.state.aiRequests.filter(item => item.phase === 'analyze').length, 1);
   h.binding.accountId = '456';
-  assert.equal(h.ai.isCurrent(partial), false, 'real account changes still invalidate old resources');
+  assert.equal(h.ai.isCurrent(partial), true, '换号不使已完成公共建议失效');
+  assert.equal(h.ai.isCurrent(partial, 'music'), false, '音乐来源仍需匹配当前账号');
 }
 
 // 完成后仅离线提示变化不使建议失效，也不自动查询或重新生成。
@@ -309,7 +312,7 @@ for (const invalid of [{title: '😀'.repeat(11)}, {description: '长'.repeat(98
 }
 {
   const h = harness(), value = await h.ai.generate({...h.input, kind: 'video'});
-  assert.ok(value.title); assert.equal(value.music, null); assert.equal(h.state.queries.length, 0);
+  assert.ok(value.title); assert.equal(value.music, null); assert.deepEqual(h.state.queries.map(item => item.operation).sort(), ['activities.list', 'hotspots.search']);
   assert.ok(value.warnings.some(item => item.code === 'AI_RESOURCES_UNSUPPORTED'));
 }
 // 无日期或省略日期时不回退到机器时钟，并移除模型重复/猜测的末尾日期。
@@ -319,5 +322,172 @@ for (const tag of ['', undefined]) {
   assert.equal(value.description, '#有序图库\n沿着湖边慢慢走。');
   assert.equal(value.analysis.description, '#有序图库\n沿着湖边慢慢走。');
   assert.deepEqual(value.topics, [{id: '0', name: '有序图库'}], '没有拍照日期只绑定固定品牌话题');
+}
+// 活动使用真实列表和已解析话题；热点仅采用真实词语，不让 AI 编造发布身份。
+{
+  const h = harness();
+  h.state.activities = [
+    {id: '600', name: '不可参加', disabled: true},
+    {id: '601', name: '周末徒步', topicName: '徒步日记', thumbnailURL: 'https://media.example.test/activity.jpg', credential: 'must-not-send'},
+  ];
+  h.state.hotspots = [{name: '一起去山野', heat: 12345, thumbnailURL: 'https://media.example.test/hotspot.jpg', credential: 'must-not-send'}];
+  const value = await h.ai.generate(h.input);
+  assert.equal(value.activity.id, '601');
+  assert.deepEqual(value.activity.topic, {id: '777', name: '徒步日记'});
+  assert.equal(value.hotspot.name, '一起去山野');
+  assert.deepEqual(value.states, {copy: 'ready', location: 'ready', music: 'ready', activity: 'ready', hotspot: 'ready'});
+  const selectors = h.state.aiRequests.filter(item => item.phase === 'select');
+  assert.equal(selectors.length, 2);
+  assert.deepEqual(selectors.flatMap(item => item.options.map(option => option.id)).sort(), ['601', 'hotspot-0']);
+  assert.equal(JSON.stringify(selectors).includes('must-not-send'), false);
+  assert.equal(JSON.stringify(selectors).includes('https://media.example.test'), false);
+  assert.equal(h.state.queries.filter(item => item.operation === 'activities.resolve').length, 1);
+  assert.equal(h.state.queries.find(item => item.operation === 'hotspots.search').params.draftId, 'draft-one');
+}
+
+// 不关联是成功建议，查询或匹配失败则单独标错，不把失败伪装成“不关联”。
+{
+  const h = harness(); h.state.activities = [{id: '601', name: '无关活动'}]; h.state.hotspots = [{name: '无关热点'}];
+  h.state.selection = {choice: null};
+  const value = await h.ai.generate(h.input);
+  assert.equal(value.states.activity, 'empty'); assert.equal(value.states.hotspot, 'empty');
+  assert.equal(value.activity, null); assert.equal(value.hotspot, null);
+  assert.equal(h.state.queries.some(item => item.operation === 'activities.resolve'), false);
+  assert.equal(value.warnings.some(item => ['activity', 'hotspot'].includes(item.scope)), false);
+}
+for (const mode of ['query', 'unknown-choice', 'invalid-topic']) {
+  const h = harness(); h.state.activities = [{id: '601', name: '活动'}]; h.state.hotspots = [{name: '热点'}];
+  if (mode === 'query') h.state.failQuery = 'hotspots.search';
+  if (mode === 'unknown-choice') h.state.selection = {choice: {id: 'made-up-id', reason: '编造'}};
+  if (mode === 'invalid-topic') h.state.resolvedActivity = {id: '601', name: '活动', topic: {id: 777, name: '错误数字身份'}};
+  const value = await h.ai.generate(h.input);
+  assert.equal(value.states[mode === 'query' ? 'hotspot' : 'activity'], 'error');
+  assert.equal(value.music.id, '201'); assert.equal(value.location.id, '101'); assert.ok(value.title);
+}
+
+// 音乐单独定制同时影响搜索线索与候选选择，热点提示词不会泄露到其他推荐项。
+{
+  const h = harness(); h.state.hotspots = [{name: '一起徒步'}];
+  h.input.resourcePrompts = {music: '只要纯音乐，不要人声。', hotspot: '只关联户外徒步。'};
+  await h.ai.generate(h.input);
+  assert.match(h.state.aiRequests.find(item => item.phase === 'analyze').prompt, /只要纯音乐/);
+  assert.match(h.state.aiRequests.find(item => item.phase === 'match').context, /只要纯音乐/);
+  assert.match(h.state.aiRequests.find(item => item.phase === 'select').prompt, /只关联户外徒步/);
+  assert.equal(h.state.aiRequests.find(item => item.phase === 'analyze').prompt.includes('只关联户外'), false);
+}
+
+// 换一首只读取音乐候选，保留文案、地点、活动和热点，并优先换成另一个真实候选。
+{
+  const h = harness(); h.state.activities = [{id: '601', name: '徒步活动'}]; h.state.hotspots = [{name: '一起徒步'}];
+  const first = await h.ai.generate(h.input);
+  h.state.music.push({...h.state.music[0], id: '202', name: '另一首纯音乐'});
+  h.state.analysis.title = '不应覆盖原文案'; h.state.analysis.music.queries = ['纯音乐'];
+  const queryStart = h.state.queries.length, askStart = h.state.aiRequests.length;
+  const next = await h.ai.regenerate(first, 'music', {prompt: '轻快一点，只要纯音乐'});
+  assert.equal(next.music.id, '202'); assert.equal(next.title, first.title); assert.equal(next.description, first.description);
+  for (const key of ['location', 'activity', 'hotspot']) assert.equal(next[key], first[key]);
+  assert.deepEqual(h.state.queries.slice(queryStart).map(item => item.operation), ['music.search']);
+  assert.deepEqual(h.state.aiRequests.slice(askStart).map(item => item.phase), ['analyze', 'match']);
+  assert.match(h.state.aiRequests.at(-2).prompt, /轻快一点，只要纯音乐/);
+  assert.deepEqual(h.state.aiRequests.at(-1).candidates.locations, []);
+  assert.equal(h.ai.isCurrent(first), false); assert.equal(h.ai.isCurrent(next), true);
+  const reset = await h.ai.regenerate(next, 'music', {prompt: ''});
+  assert.equal(h.state.aiRequests.at(-2).prompt.includes('轻快一点'), false);
+  assert.equal(h.ai.isCurrent(reset), true);
+}
+
+// 更换热点不重新分析图片或查询音乐；单独文案重做也不触碰资源查询。
+{
+  const h = harness(); h.state.hotspots = [{name: '一起徒步'}, {name: '走进山野'}];
+  const first = await h.ai.generate(h.input), queryStart = h.state.queries.length, askStart = h.state.aiRequests.length;
+  const second = await h.ai.regenerate(first, 'hotspot', {prompt: '只选山野主题'});
+  assert.equal(second.hotspot.name, '走进山野'); assert.equal(second.music, first.music);
+  assert.deepEqual(h.state.queries.slice(queryStart).map(item => item.operation), ['hotspots.search']);
+  assert.deepEqual(h.state.aiRequests.slice(askStart).map(item => item.phase), ['select']);
+  assert.match(h.state.aiRequests.at(-1).prompt, /只选山野主题/);
+  h.state.analysis.title = '重新写的文案';
+  const queries = h.state.queries.length;
+  const copy = await h.ai.regenerate(second, 'copy');
+  assert.equal(copy.title, '重新写的文案'); assert.equal(copy.hotspot, second.hotspot); assert.equal(copy.music, second.music);
+  assert.equal(h.state.queries.length, queries);
+}
+
+// 局部失败只重试该项；已经成功的候选和文案不重复生成或读取。
+{
+  const h = harness(); h.state.failQuery = 'hotspots.search'; h.state.hotspots = [{name: '一起徒步'}];
+  const partial = await h.ai.generate(h.input); h.state.failQuery = null;
+  const queries = h.state.queries.length, asks = h.state.aiRequests.length;
+  const retried = await h.ai.retryResources(partial);
+  assert.equal(retried.hotspot.name, '一起徒步'); assert.equal(retried.music, partial.music);
+  assert.deepEqual(h.state.queries.slice(queries).map(item => item.operation), ['hotspots.search']);
+  assert.deepEqual(h.state.aiRequests.slice(asks).map(item => item.phase), ['select']);
+}
+
+// 关闭助手保留完成建议；取消新的在途请求也不能将旧建议覆盖或重新激活迟到结果。
+{
+  const h = harness(), first = await h.ai.generate(h.input);
+  h.ai.cancelPending(); assert.equal(h.ai.isCurrent(first), true);
+  let release, started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  h.state.onAI = request => { if (request.phase === 'analyze') { started(); return new Promise(resolve => { release = resolve; }); } };
+  const pending = h.ai.regenerate(first, 'copy'), outcome = assert.rejects(pending, error => error.name === 'AbortError');
+  await waiting; h.ai.cancelPending(); release(); await outcome;
+  assert.equal(h.ai.isCurrent(first), true);
+  h.ai.cancel(); assert.equal(h.ai.isCurrent(first), false);
+}
+
+// 素材或作品变化后的单项请求在读取前拒绝，不能复用旧作品建议。
+for (const field of ['revision', 'draftId']) {
+  const h = harness(), first = await h.ai.generate(h.input), queries = h.state.queries.length;
+  h.binding[field] += '-changed';
+  await assert.rejects(h.ai.regenerate(first, 'hotspot'), error => error.code === 'AI_STALE_RESULT');
+  assert.equal(h.state.queries.length, queries);
+}
+// 编辑建议保留结果身份；其他单项重做不得恢复旧文案，明确清空同样保留。
+{
+  const h = harness(); h.state.hotspots = [{name: '一起徒步'}];
+  const first = await h.ai.generate(h.input);
+  assert.equal(h.ai.editCopy(first, {title: '手动改写标题', description: '手动改写正文'}), first);
+  assert.equal(first.analysis.title, '手动改写标题'); assert.equal(h.ai.isCurrent(first), true);
+  const next = await h.ai.regenerate(first, 'hotspot');
+  assert.equal(next.title, '手动改写标题'); assert.equal(next.description, '手动改写正文');
+  h.ai.editCopy(next, {title: '', description: ''});
+  const empty = await h.ai.regenerate(next, 'location');
+  assert.equal(empty.title, ''); assert.equal(empty.description, ''); assert.equal(h.ai.isCurrent(empty), true);
+  assert.throws(() => h.ai.editCopy(empty, {title: '长'.repeat(21), description: ''}), error => error.code === 'AI_INVALID_REQUEST');
+  h.binding.accountId = 'changed';
+  assert.equal(h.ai.editCopy(empty, {title: '保留文案', description: ''}).title, '保留文案');
+  assert.equal(h.ai.isCurrent(empty, 'music'), false, '编辑公共文案不能使旧账号音乐候选有效');
+}
+// 完成的公共建议可跨账号保留；每个账号相关项独立刷新，不能借另一项重推恢复资格。
+for (const field of ['accountId', 'profileId']) {
+  const h = harness(); h.state.hotspots = [{name: '一起徒步'}];
+  const first = await h.ai.generate(h.input), queries = h.state.queries.length;
+  h.binding[field] += '-changed';
+  for (const scope of [undefined, 'copy', 'location', 'hotspot']) assert.equal(h.ai.isCurrent(first, scope), true);
+  for (const scope of ['music', 'activity']) assert.equal(h.ai.isCurrent(first, scope), false);
+  assert.equal(h.state.queries.length, queries, '换号自身不会发起额外查询');
+  const next = await h.ai.regenerate(first, 'hotspot');
+  assert.deepEqual(next.location, first.location); assert.deepEqual(next.music, first.music);
+  assert.deepEqual(h.state.queries.slice(queries).map(item => item.operation), ['hotspots.search']);
+  assert.equal(h.ai.isCurrent(next, 'music'), false); assert.equal(h.ai.isCurrent(next, 'activity'), false);
+  const music = await h.ai.regenerate(next, 'music');
+  assert.equal(h.ai.isCurrent(music, 'music'), true);
+  assert.equal(h.ai.isCurrent(music, 'activity'), false, '换一首只能更新音乐的账号来源');
+  const beforeRetry = h.state.queries.length;
+  const refreshed = await h.ai.retryResources(music);
+  assert.equal(h.ai.isCurrent(refreshed, 'activity'), true);
+  assert.deepEqual(h.state.queries.slice(beforeRetry).map(item => item.operation), ['activities.list']);
+  assert.deepEqual(refreshed.location, first.location);
+}
+// 更新其他建议不会清除尚未重试的音乐/地点错误。
+{
+  const h = harness(); h.state.failAI = 'match'; h.state.hotspots = [{name: '一起徒步'}];
+  const first = await h.ai.generate(h.input);
+  const next = await h.ai.regenerate(first, 'hotspot');
+  for (const key of ['music', 'location']) {
+    assert.equal(next.states[key], 'error');
+    assert.ok(next.warnings.some(item => item.scope === key && item.code === 'AI_MATCH_FAILED'));
+  }
 }
 console.log('studio AI: explicit images, local-only contract, actual candidate provenance, city resolution, bounded matching, dates, offline/partial retry, cancellation and edit/account race isolation passed');

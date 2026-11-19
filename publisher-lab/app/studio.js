@@ -6,6 +6,7 @@ import {mountStudioAIPanel} from './studio-ai-panel.js';
 import {photoContext} from './ai-context.js';
 import {selectLibraryAssets} from './library-selection.js';
 import {mountStudioGallery, mountDouyinPreview} from './studio-gallery.js';
+import {buildAIApplication} from './studio-ai-apply.js';
 import {mountResourceControls} from './studio-resources.js';
 import {mountMusicDrawer, mountMusicCategories} from './studio-music.js';
 import {mountSavedMusicPreview} from './studio-saved-music.js';
@@ -92,7 +93,7 @@ const preparationProgress = mountPreparationProgress({items: $('activity-items')
 const accountSelector = mountAccountSelector($('account-select'));
 
 
-// gallery 与 phone 共用查看索引；只改变预览焦点，不改变发布顺序。
+// 画廊与发布预览共享查看焦点，不改变发布顺序。
 const onMediaIndex = index => { focusID = current().assets[index]?.id || null; renderMedia(); renderPreview(); };
 const gallery = mountStudioGallery($('studio-gallery'), {onIndexChange: onMediaIndex, onRemove: id => { void removeImage(id); }, onReorder: reorderImage});
 const phone = mountDouyinPreview($('douyin-preview'), {onIndexChange: onMediaIndex});
@@ -144,14 +145,16 @@ const activities = mountActivities({container: $('studio-activities'), current, 
   onChanged: () => { $('description').value = current().description; markChanged(); renderResources(); },
 });
 
-// aiAssistant 将模型分析和真实平台候选分开，应用前始终检查作品及账号身份。
+// aiAssistant 将模型分析和平台候选分开；公共建议检查作品版本，音乐/活动另检查账号来源。
 const aiAssistant = createStudioAI({client, getCurrent: () => ({draftId: current().id,
-  accountId: session.account?.id || '', profileId: session.activeProfileId || '', connected: session.connected, revision: contentSignature(current())})});
+  accountId: session.account?.id || '', profileId: session.activeProfileId || '', connected: session.connected, revision: JSON.stringify([current().kind, current().assets.map(asset => [asset.id, assetDetails.get(asset.id)?.version, assetDetails.get(asset.id)?.error])])})});
 const aiPanel = mountStudioAIPanel({assistant: aiAssistant, current, preferences: () => store.data,
-  baseURL: context.apiBaseURL, mediaURL, safeURL, assetDetail: id => assetDetails.get(id),
+  baseURL: context.apiBaseURL, mediaURL, safeURL, assetDetail: id => assetDetails.get(id), blocked: () => busy,
+  onOpen: () => { for (const video of $('douyin-preview').querySelectorAll('video')) video.pause(); },
   savePreferences: value => {
     if (Object.hasOwn(value, 'aiContext')) current().aiContext = value.aiContext;
     if (Object.hasOwn(value, 'aiPrompt')) store.data.aiPrompt = value.aiPrompt;
+    if (Object.hasOwn(value, 'aiResourcePrompts')) current().aiResourcePrompts = value.aiResourcePrompts;
     markChanged({content: false});
   }, apply: applyAIResult,
 });
@@ -200,8 +203,7 @@ function notice(message = '', error = false) {
   $('dismiss-page-notice').hidden = !error;
   $('page-notice').classList.toggle('error', error);
   $('page-notice').setAttribute('role', error ? 'alert' : 'status');
-  if (message && !error) noticeTimer = setTimeout(() => { $('page-notice').hidden = true; fitWorkspace(); }, 6000);
-  fitWorkspace();
+  if (message && !error) noticeTimer = setTimeout(() => { $('page-notice').hidden = true; }, 6000);
 }
 
 // musicPreviewNotice 将试听反馈放在选曲旁，避免滚动至扩展信息时看不到页首错误。
@@ -209,12 +211,6 @@ function musicPreviewNotice(message = '') {
   const node = $('music-preview-message');
   node.textContent = message; node.hidden = !message;
   musicPreviewMessageIdentity = message ? JSON.stringify([musicSearchIdentity(), current().music?.id, current().music?.name]) : '';
-  fitWorkspace();
-}
-
-// fitWorkspace 将高度交给 CSS 的视口两栏布局；提示变化不通过脚本重置滚动或预览位置。
-function fitWorkspace() {
-  document.querySelector('.workspace').style.removeProperty('height');
 }
 
 // markChanged 废弃过期准备结果并保存恢复副本；不触发上传或联网发布。
@@ -224,7 +220,7 @@ function markChanged({content = true} = {}) {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { void saveDraft(false); }, 450);
   renderSaveState();
-  renderDrafts();
+  renderDraftSummary(current());
   renderPreview();
   renderActions();
 }
@@ -256,7 +252,19 @@ function renderSaveState() {
   $('save-draft').disabled = saving || busy;
 }
 
-// renderDrafts 展示所有本机作品，不把其他草稿的上传/发布状态复用于当前作品。
+// renderDraftSummary 只更新被编辑草稿的可见摘要，普通打字不重建整份列表。
+function renderDraftSummary(draft, row = [...$('draft-list').children].find(node => node.dataset.draftId === draft.id)) {
+  if (!row) return;
+  const name = draft.name || draft.title || '未命名作品';
+  const summary = `${draft.kind === 'image' ? '图文' : '视频'} · ${draft.assets.length} 项${draft.receipt ? ' · ' + receiptTitles[draft.receipt.status] : ''}`;
+  for (const [selector, value] of [['strong', name], ['small', summary]]) {
+    const node = row.querySelector(selector);
+    if (node.textContent !== value) node.textContent = value;
+  }
+  row.querySelector('.draft-delete').setAttribute('aria-label', '删除草稿：' + name);
+}
+
+// renderDrafts 仅在新增、删除、切稿或回执变化时重建本机作品列表。
 function renderDrafts() {
   $('draft-list').replaceChildren();
   $('draft-total').textContent = store.data.drafts.length;
@@ -266,14 +274,13 @@ function renderDrafts() {
     button.setAttribute('aria-current', String(draft.id === current().id));
     button.disabled = busy;
     const text = element('span', 'draft-text');
-    text.append(element('strong', '', draft.name || draft.title || '未命名作品'));
-    text.append(element('small', '', `${draft.kind === 'image' ? '图文' : '视频'} · ${draft.assets.length} 项${draft.receipt ? ' · ' + receiptTitles[draft.receipt.status] : ''}`));
+    text.append(element('strong'), element('small'));
     button.append(element('span', 'draft-icon', draft.kind === 'image' ? '▧' : '▷'), text);
     button.onclick = () => { void switchDraft(draft.id); };
     const remove = element('button', 'draft-delete', '删除'); remove.type = 'button'; remove.disabled = busy;
-    remove.setAttribute('aria-label', '删除草稿：' + (draft.name || draft.title || '未命名作品'));
     remove.onclick = () => { void deleteDraft(draft.id); };
     row.append(button, remove); $('draft-list').append(row);
+    renderDraftSummary(draft, row);
   }
 }
 
@@ -384,7 +391,7 @@ async function hydrateAssets(ids) {
       }
       if (!['image', 'video'].includes(data.mediaType)) continue;
       const asset = {id: data.id || id, name: data.name || data.fileName || id, kind: data.mediaType};
-      assetDetails.set(asset.id, {...asset, sizeBytes: data.sizeBytes, ...photoContext(data), error: ''});
+      assetDetails.set(asset.id, {...asset, sizeBytes: data.sizeBytes, version: JSON.stringify([data.sizeBytes, data.modifiedAt]), ...photoContext(data), error: ''});
       result.push(asset);
     } catch (error) {
       assetDetails.set(id, {id, error: error.message || '素材读取失败'});
@@ -553,9 +560,8 @@ function renderMedia() {
   $('spec-quality-title').textContent = video ? '视频画质' : '图片数量';
   $('spec-quality-description').textContent = video ? '保留图库原始视频文件，上传后由平台完成转码。' : '每篇图文可添加 1–35 张图片，点击图片可放大查看，可独立选择封面。';
   $('spec-ratio-title').textContent = video ? '视频画幅' : '作品素材';
-  $('spec-ratio-description').textContent = video ? '上传前可在右侧预览画面；视频图片封面暂未接入。' : '选择图库内的原始素材，上传前可预览并核对作品内容。';
+  $('spec-ratio-description').textContent = video ? '点击素材可查看视频；视频图片封面暂未接入。' : '选择图库内的原始素材，上传前可预览并核对作品内容。';
   $('media-heading').textContent = video ? '编辑视频' : '编辑图片';
-  document.querySelector('.preview-heading strong').textContent = video ? '预览视频' : '预览图文';
   $('media-empty').hidden = editing;
   gallery.render({assets: previewAssets(), index: Math.max(0, draft.assets.findIndex(asset => asset.id === focusID)), disabled: busy || connecting, scope: draft.id});
   $('preview-file-label').hidden = !!context.nativeUIAvailable;
@@ -569,13 +575,14 @@ function previewAssets() {
     url: assetDetails.get(asset.id)?.error ? '' : mediaURL(asset, asset.kind === 'video' ? 'original' : 'preview')}));
 }
 
-// renderPreview 使用当前账号和正文绘制抖音样式预览，未提供的互动数量不作模拟。
+// renderPreview 同步草稿到发布预览；AI 打开期间隐藏，关闭后直接呈现最新内容。
 function renderPreview() {
   descriptionHighlight.render();
   const draft = current();
   phone.render({assets: previewAssets(), index: Math.max(0, draft.assets.findIndex(asset => asset.id === focusID)),
     accountName: session.account?.name || '尚未验证发布账号', avatarURL: safeURL(session.account?.avatarURL),
     title: draft.title, description: draft.description, musicName: draft.music?.name || ''});
+  $('preview-kind').textContent = draft.kind === 'video' ? '预览视频' : '预览图文';
   $('title-count').textContent = `${draft.title.length} / ${session.capabilities?.limits?.titleLength || 20}`;
   $('description-count').textContent = `${draft.description.length} / ${session.capabilities?.limits?.descriptionLength || 1000}`;
 }
@@ -605,7 +612,7 @@ function renderResources() {
   $('music-name').textContent = current().music?.name || '点击添加适合作品风格音乐';
   $('clear-music').hidden = !current().music;
   savedMusicPreview.render();
-  resources.render(); hotspot.render(); renderCover();
+  resources.render(); renderCover();
 }
 
 // fillOptions 用横向单选组展示账号允许值，草稿仍保存原有设置字段。
@@ -815,7 +822,7 @@ function renderConnection(message = '', {error = false} = {}) {
     row.append(element('span', '', name), element('span', supports(operation) ? 'available' : '', supports(operation) ? '可用' : '未就绪'));
     $('capability-list').append(row);
   }
-  fitWorkspace(); renderPreview(); renderActions();
+  renderPreview(); renderActions();
 }
 
 // renderAccounts 只展示宿主保存的账号名称；存在历史档案不代表会话仍有效，选中后仍须平台核验。
@@ -848,7 +855,6 @@ function acceptSession(value = {}) {
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
   }
   aiPanel.sync();
-  activities.render(); hotspot.render();
   renderSettings(); renderResources(); renderConnection(value.message || '');
 }
 
@@ -909,6 +915,7 @@ async function preparePublication() {
     }
     prepared = {...result, draftId, signature};
     resources.invalidateRecommendations();
+    hotspot.invalidate();
     preparationProgress.finish('completed');
     activity('素材与作品检查完成。请核对账号，再点击发布。');
     notice('准备完成，尚未发布。');
@@ -1355,7 +1362,6 @@ async function cropCover() {
 // render 绑定当前草稿的完整表单；普通打字仅刷新相关区域避免丢失光标。
 function render() {
   aiPanel.sync();
-  activities.render(); hotspot.render();
   const draft = current();
   if (renderedDraftId !== draft.id) {
     if (searchState?.type === 'music' && $('search-dialog').open) $('search-dialog').close();
@@ -1395,37 +1401,20 @@ async function previewFiles(files) {
   notice('本机文件已用于编辑预览。要上传发布，请先把这些文件加入图库，再从插件菜单带入。');
 }
 
-// applyAIResult 只应用用户勾选的建议；未勾选位置和音乐保留手动选择，草稿变化则拒绝旧结果。
+// applyAIResult 一次应用显式勾选项；候选已生成时不重复查询账号或匹配平台资源。
 async function applyAIResult(value, selection) {
-  if (busy || !aiAssistant.isCurrent(value)) throw Error('作品内容或账号已变化，请重新生成建议。');
-  const replacements = [];
-  if (selection.copy && (current().title || current().description)) replacements.push('标题和描述');
-  if (selection.location && value.location && current().location) replacements.push('位置');
-  if (selection.music && value.music && current().music) replacements.push('背景音乐');
-  if (replacements.length && !(await confirmDialog({title: '应用 AI 建议？', message: `将替换当前${replacements.join('、')}。`, submit: '应用所选'}))) return false;
-  if (busy || !aiAssistant.isCurrent(value)) throw Error('作品内容或账号已变化，本次建议未应用。');
+  const applicable = () => aiAssistant.isCurrent(value) && Object.entries(selection).every(([key, selected]) => !selected || aiAssistant.isCurrent(value, key));
+  if (busy || !applicable()) throw Error('所选建议的素材或账号来源已变化，请更新对应建议。');
+  const draft = current(), signature = contentSignature(draft);
+  const next = buildAIApplication(draft, value, selection);
   const selectedMusic = selection.music && value.music ? await rememberSelectedMusic(value.music) : null;
-  if (busy || !aiAssistant.isCurrent(value)) throw Error('作品内容或账号已变化，本次建议未应用。');
-  if (selection.copy) {
-    current().title = value.title; current().description = value.description;
-    resources.synchronizeDescription(value.description);
-    // 绑定编排器确定的品牌和拍照日期；已手选的同名平台话题保留原 ID，无需再搜索。
-    for (const topic of value.topics || []) {
-      if (!current().topics.some(existing => existing.name === topic.name)) current().topics.push({...topic});
-    }
-  }
-  if (selection.location && value.location) {
-    const {id, name, cityCode, cityName} = value.location;
-    current().location = {id, name, cityCode, cityName};
-  }
-  if (selection.music && value.music) {
-    const item = selectedMusic;
-    current().music = entityValue(item);
-    musicCandidates.set(item.id, {...item, description: item.author});
-    const source = safeURL(item.previewURL);
-    if (source) resourcePreviews.set('music:' + item.id, source);
-    stopMusic();
-    savedMusicPreview.prime(item);
+  if (busy || current() !== draft || signature !== contentSignature(draft) || !applicable()) throw Error('应用期间作品或所选建议的账号来源已变化，本次建议未应用。');
+  for (const key of ['title', 'description', 'topics', 'mentions', 'activities', 'hotspot', 'location', 'music']) draft[key] = next[key];
+  if (selectedMusic) {
+    musicCandidates.set(selectedMusic.id, {...selectedMusic, description: selectedMusic.author});
+    const source = safeURL(selectedMusic.previewURL);
+    if (source) resourcePreviews.set('music:' + selectedMusic.id, source);
+    stopMusic(); savedMusicPreview.prime(selectedMusic);
   }
   markChanged(); render(); return true;
 }
@@ -1502,11 +1491,10 @@ function bindEvents() {
   $('search-dialog').onclose = () => { clearTimeout(musicSearchTimer); searchController?.abort(); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchGeneration += 1; if (searchState?.type === 'music') stopMusic(); searchState = null; };
   $('cancel-operation').onclick = () => operationController?.abort();
   $('open-ai').onclick = () => aiPanel.open();
-  window.addEventListener('resize', fitWorkspace);
   window.addEventListener('pagehide', () => accountSelector.dispose());
   window.addEventListener('luma:close-request', event => { event.preventDefault(); void closeHost(true); });
   window.addEventListener('beforeunload', event => { if (busy || storageError || store.savedRevision < store.revision) { event.preventDefault(); event.returnValue = ''; } });
-  window.addEventListener('pagehide', () => { for (const controller of statusQueries.values()) controller.abort(); savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); activities.dispose(); hotspot.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
+  window.addEventListener('pagehide', () => { for (const controller of statusQueries.values()) controller.abort(); savedMusicPreview.dispose(); musicDrawer.dispose(); aiPanel.dispose(); phone.dispose(); activities.dispose(); hotspot.dispose(); musicCategories.dispose(); clearTimeout(musicSearchTimer); searchState?.categoryController?.abort(); searchState?.selectionController?.abort(); searchController?.abort(); for (const value of transientMedia.values()) URL.revokeObjectURL(value.url); });
 }
 
 // start 加载当前草稿与素材，不在初始化时启动执行模块或发送平台请求。

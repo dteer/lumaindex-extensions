@@ -56,7 +56,7 @@ function activitiesValue(values) {
 export function emptyDraft(kind = 'image') {
   return {
     id: newID(), name: kind === 'video' ? '未命名视频' : '未命名图文', kind,
-    assets: [], title: '', description: '', aiContext: '', topics: [], mentions: [], activities: [],
+    assets: [], title: '', description: '', aiContext: '', aiResourcePrompts: {music: '', hotspot: ''}, topics: [], mentions: [], activities: [],
     hotspot: '', music: null, location: null, collection: null, cover: null,
     settings: {visibility: 'public', download: 'allow', publishTime: 'now', scheduledAt: '', declarations: []},
     updatedAt: new Date().toISOString(), receipt: null,
@@ -87,6 +87,7 @@ export function sanitizeDraft(raw) {
   result.title = textValue(source.title, 2000);
   result.description = textValue(source.description, MAX_DESCRIPTION_LENGTH);
   result.aiContext = textValue(source.aiContext, 6000);
+  result.aiResourcePrompts = {music: textValue(source.aiResourcePrompts?.music, 4000), hotspot: textValue(source.aiResourcePrompts?.hotspot, 4000)};
   const seen = new Set();
   result.assets = (Array.isArray(source.assets) ? source.assets : []).filter(asset => {
     if (!asset || !textValue(asset.id) || !kinds.has(asset.kind) || seen.has(asset.id)) return false;
@@ -124,7 +125,7 @@ export function sanitizeDraft(raw) {
 
 // publicationDraft 生成单次提交快照；本机草稿名称、回执等不会误入平台作品字段。
 export function publicationDraft(raw) {
-  const {receipt, updatedAt, name, aiContext, ...draft} = sanitizeDraft(raw);
+  const {receipt, updatedAt, name, aiContext, aiResourcePrompts, ...draft} = sanitizeDraft(raw);
   if (draft.settings.publishTime === 'scheduled' && draft.settings.scheduledAt) {
     const timestamp = new Date(draft.settings.scheduledAt);
     if (Number.isFinite(timestamp.getTime())) draft.settings.scheduledAt = timestamp.toISOString();

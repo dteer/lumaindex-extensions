@@ -65,7 +65,7 @@ export function mountSavedMusicPreview({button, iconButton, audio, current, requ
     const previewURL = safeURL(item.previewURL);
     if (!previewURL) throw Error('未能恢复这首音乐的试听音频，已保留原配乐，请重新选择该音乐后重试。');
     refreshSource = false;
-    return {...item, previewURL};
+    return {...music, ...item, previewURL};
   }
 
   /** 播放只在明确点击后开始；媒体策略阻止时保留地址，下一次点击同步 play，不重复查询。 */

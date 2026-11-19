@@ -37,6 +37,7 @@ window.preview=mountSavedMusicPreview({button:$('listen'),iconButton:$('icon'),a
   if(window.mode==='missing-audio') return {...item,previewURL:null};
   if(window.mode==='failure') throw Error('歌曲当前不可用。');
   if(window.mode==='renamed') return {...item,name:'平台更新后的原声名称'};
+  if(window.mode==='saved-source') return {id:item.id,previewURL:item.previewURL};
   return item;
  },play:item=>drawer.play(item),stop:()=>drawer.stop(),safeURL,onError:message=>{window.errors.push(message);$('notice').textContent=message;}});
 for(const id of ['listen','icon']) { const handler=$(id).onclick; $(id).onclick=event=>{window.clickPhase=true;try{return handler(event);}finally{window.clickPhase=false;}}; }
@@ -73,6 +74,10 @@ try {
  assert.equal(await page.evaluate(()=>calls.length),0);await page.locator('#listen').click();await playing();assert.equal(await page.evaluate(()=>calls.length),1,'reopening resolves a fresh preview URL');
 
  // 本页刚选择的真实原声直接使用内存地址；第一次点击保留用户激活，不依赖名称可搜索。
+ await reset();await page.evaluate(()=>{mode='saved-source';});
+ await page.locator('#listen').click();await playing();
+ assert.ok((await page.locator('#footer').textContent()).includes('日落黄昏（吉他曲）'),'older saved sources keep the draft display name without fetching metadata');
+
  await reset();
  assert.equal(await page.evaluate(()=>preview.prime({...state.music,previewURL:location.origin+'/song.wav'})),true);
  assert.equal(await page.evaluate(()=>calls.length),0);

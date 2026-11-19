@@ -195,10 +195,12 @@ return async function creatorRequest(operation, params = {}) {
         followerCount: Number.isSafeInteger(x.follower_count) && x.follower_count >= 0 ? x.follower_count : null,
         thumbnailURL: mediaURL(x.avatar_thumb?.url_list?.[0])};
     }), nextCursor: data.has_more && Number.isSafeInteger(Number(data.cursor)) ? String(Number(data.cursor) + 10) : null}};
-    // 官方详情按 id 返回基础身份，不返回音源或时长；这些字段不能猜测或由名称补齐。
+    // 官方详情按 id 返回基础身份；时长仅在平台实际提供有效值时采用，不能按名称补猜。
     if (operation === 'music.resolve') {
       if (!identifier(data.music_id) || data.music_id !== params.id || !text(data.music_name).trim() || data.music_name.length > 200) throw Error('平台返回的音乐身份无法确认，已保留原配乐。');
-      return {ok: true, data: {id: data.music_id, name: data.music_name, description: text(data.music_author), thumbnailURL: mediaURL(data.cover_url), previewURL: null}};
+      const duration = Number.isFinite(data.duration) && data.duration > 0 ? data.duration : undefined;
+      return {ok: true, data: {id: data.music_id, name: data.music_name, description: text(data.music_author), thumbnailURL: mediaURL(data.cover_url), previewURL: null,
+        ...(duration ? {duration} : {})}};
     }
     if (operation === 'music.categories') {
       if (!Array.isArray(data.categories) || data.categories.length > 100) throw Error('音乐分类格式或数量已变化，请重新读取。');
